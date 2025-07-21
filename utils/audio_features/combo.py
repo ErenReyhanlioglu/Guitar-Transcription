@@ -1,3 +1,4 @@
+#combo.py
 import numpy as np
 from .common import FeatureModule
 
@@ -32,21 +33,16 @@ class FeatureCombo(FeatureModule):
         assert len(set(frame_counts)) == 1, f"Mismatch in expected frame counts: {frame_counts}"
         return frame_counts[0]
 
-    def process_audio(self, audio):
+    def process_audio(self, audio, target_frames=None): 
         """
         Processes audio with all feature modules.
-
-        Returns
-        -------
-        dict
-            Dictionary mapping feature names to their extracted numpy arrays.
         """
         feats = {}
         for mod in self.modules:
             name = mod.__class__.__name__.lower()
             print(f"[START] {name}")
             try:
-                output = mod.process_audio(audio)
+                output = mod.process_audio(audio, target_frames=target_frames)
                 if output is not None:
                     print(f"[OK] {name}: shape = {output.shape}")
                     feats[name] = output

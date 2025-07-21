@@ -1,5 +1,6 @@
-# utils.py
+#utils.py
 import numpy as np
+import jams
 from utils.tab_features.onset_offset import extract_onsets_offsets, expand_onsets_offsets_harmonics
 from utils.tab_features.multi_pitch import extract_multi_pitch
 from utils.tab_features.transforms import (
@@ -8,6 +9,38 @@ from utils.tab_features.transforms import (
     compute_tablature_adj_spatial,
     compute_tablature_rel_spatial
 )
+
+def extract_open_string_midi_from_jams(jams_path: str, num_strings: int = 6) -> list:
+    """
+    Extract open string MIDI tuning values from a .jams file with 'note_tab' namespace.
+
+    Assumes string indices are 1-based (i.e., 1–6), and maps to list index 0–5.
+    Returns a list [high E, B, G, D, A, low E] with MIDI pitch values.
+
+    Args:
+        jams_path (str): Path to the .jams file.
+        num_strings (int): Number of strings (default: 6).
+
+    Returns:
+        list[int]: Open string MIDI pitches in high E → low E order.
+    """
+    jam = jams.load(jams_path, validate=False)
+    open_midi = [None] * num_strings
+
+    for ann in jam.annotations:
+        if ann.namespace != "note_tab":
+            continue
+        try:
+            string_index = int(ann.sandbox.string_index)  # 1-based (1–6)
+            tuning = int(ann.sandbox.open_tuning)
+            idx = string_index - 1
+            if 0 <= idx < num_strings:
+                open_midi[idx] = tuning
+        except Exception as e:
+            print(f"⚠️ Sandbox parse error: {e}")
+            continue
+
+    return open_midi  # [string_1, string_2, ..., string_6]
 
 def extract_tab_features(
     track_name: str,

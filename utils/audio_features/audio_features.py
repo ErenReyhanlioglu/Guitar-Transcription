@@ -1,7 +1,7 @@
+#audio_features.py
 import librosa
 import numpy as np
 from .common import FeatureModule
-
 
 class CQT(FeatureModule):
     """
@@ -15,24 +15,14 @@ class CQT(FeatureModule):
         self.fmin = librosa.note_to_hz(fmin)
         self.n_bins = bins_per_octave * n_octaves
 
-    def process_audio(self, audio):
+    def process_audio(self, audio, target_frames=None): 
         audio = self.frame_pad(audio)
-
-        cqt = librosa.cqt(
-            y=audio,
-            sr=self.sample_rate,
-            hop_length=self.hop_length,
-            fmin=self.fmin,
-            n_bins=self.n_bins,
-            bins_per_octave=self.bins_per_octave
-            # 'center' parametresi kaldırıldı
-        )
-
+        cqt = librosa.cqt(y=audio, sr=self.sample_rate, hop_length=self.hop_length,
+                          fmin=self.fmin, n_bins=self.n_bins,
+                          bins_per_octave=self.bins_per_octave)
         magnitude = np.abs(cqt)
-        return self.post_proc(magnitude, original_audio=audio)
 
-    def get_feature_size(self):
-        return (self.n_bins,)
+        return self.post_proc(magnitude, original_audio=audio, target_frames=target_frames)
 
 
 class STFT(FeatureModule):
@@ -44,18 +34,11 @@ class STFT(FeatureModule):
         super().__init__(sample_rate, hop_length, n_fft // 2 + 1, decibels, center)
         self.n_fft = n_fft
 
-    def process_audio(self, audio):
+    def process_audio(self, audio, target_frames=None): 
         audio = self.frame_pad(audio)
-
-        stft = librosa.stft(audio, n_fft=self.n_fft,
-                            hop_length=self.hop_length,
-                            center=self.center)
+        stft = librosa.stft(audio, n_fft=self.n_fft, hop_length=self.hop_length, center=self.center)
         magnitude = np.abs(stft)
-
-        return self.post_proc(magnitude, original_audio=audio)
-
-    def get_feature_size(self):
-        return (self.n_fft // 2 + 1,)
+        return self.post_proc(magnitude, original_audio=audio, target_frames=target_frames)
 
 
 class HCQT(FeatureModule):
@@ -73,28 +56,17 @@ class HCQT(FeatureModule):
         self.num_harmonics = len(harmonics)
         super().__init__(sample_rate, hop_length, self.num_harmonics, decibels, center)
 
-    def process_audio(self, audio):
+    def process_audio(self, audio, target_frames=None):
         audio = self.frame_pad(audio)
-
         hcqt_list = []
         for h in self.harmonics:
             fmin_h = self.fmin * h
-            cqt_h = librosa.cqt(
-                y=audio,
-                sr=self.sample_rate,
-                hop_length=self.hop_length,
-                fmin=fmin_h,
-                n_bins=self.n_bins,
-                bins_per_octave=self.bins_per_octave
-                # 'center' parametresi kaldırıldı
-            )
+            cqt_h = librosa.cqt(y=audio, sr=self.sample_rate, hop_length=self.hop_length,
+                                fmin=fmin_h, n_bins=self.n_bins,
+                                bins_per_octave=self.bins_per_octave)
             hcqt_list.append(np.abs(cqt_h))
-
-        hcqt = np.stack(hcqt_list, axis=0)  # shape: [H, F, T]
-        return self.post_proc(hcqt, original_audio=audio)
-
-    def get_feature_size(self):
-        return (self.num_harmonics, self.n_bins)
+        hcqt = np.stack(hcqt_list, axis=0)
+        return self.post_proc(hcqt, original_audio=audio, target_frames=target_frames)
 
 
 class MelSpec(FeatureModule):
@@ -106,19 +78,12 @@ class MelSpec(FeatureModule):
         super().__init__(sample_rate, hop_length, n_mels, decibels, center)
         self.n_mels = n_mels
 
-    def process_audio(self, audio):
+    def process_audio(self, audio, target_frames=None): 
         audio = self.frame_pad(audio)
-
-        mel = librosa.feature.melspectrogram(y=audio,
-                                             sr=self.sample_rate,
+        mel = librosa.feature.melspectrogram(y=audio, sr=self.sample_rate,
                                              hop_length=self.hop_length,
-                                             n_mels=self.n_mels,
-                                             center=self.center)
-
-        return self.post_proc(mel, original_audio=audio)
-
-    def get_feature_size(self):
-        return (self.n_mels,)
+                                             n_mels=self.n_mels, center=self.center)
+        return self.post_proc(mel, original_audio=audio, target_frames=target_frames)
 
 
 class SignalPower(FeatureModule):
@@ -129,11 +94,7 @@ class SignalPower(FeatureModule):
                  decibels=False, center=False):
         super().__init__(sample_rate, hop_length, 1, decibels, center)
 
-    def process_audio(self, audio):
+    def process_audio(self, audio, target_frames=None): 
         audio = self.frame_pad(audio)
-
         power = librosa.feature.rms(y=audio, hop_length=self.hop_length, center=self.center)
-        return self.post_proc(power, original_audio=audio)
-
-    def get_feature_size(self):
-        return (1,)
+        return self.post_proc(power, original_audio=audio, target_frames=target_frames)

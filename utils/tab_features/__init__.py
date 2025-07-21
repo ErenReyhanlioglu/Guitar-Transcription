@@ -10,19 +10,53 @@ Each function is responsible for computing a specific set of features such as:
 - Audio-aligned symbolic annotations
 """
 
-from utils.tab_features.utils import extract_tab_features
-from utils.tab_features.onset_offset import extract_onsets_offsets
-from utils.tab_features.notes import extract_notes_and_pitch_list
-from utils.tab_features.multi_pitch import extract_multi_pitch
-from utils.tab_features.transforms import compute_tablature_adj, compute_tablature_rel
-from utils.tab_features.builder import build_tab_npz
+# The main function to build the entire feature set
+from .builder import build_tab_npz
 
+# Core logic for note extraction and timing, now self-contained
+from .notes import (
+    create_all_note_data_from_jams,
+    midi_to_freq
+)
+
+# Core logic for tablature matrix creation (now called from within notes.py)
+from .pitch import compute_tablature
+
+# Helper functions for specific feature types
+from .utils import extract_tab_features, extract_open_string_midi_from_jams
+from .onset_offset import extract_onsets_offsets
+from .multi_pitch import extract_multi_pitch
+
+# Functions for creating different tablature representations
+from .transforms import (
+    compute_tablature_adj,
+    compute_tablature_rel,
+    compute_tablature_adj_spatial,
+    compute_tablature_rel_spatial
+)
+
+
+# List of functions to be exposed when the module is imported
 __all__ = [
+    # Main builder
+    "build_tab_npz",
+
+    # Core logic
+    "create_all_note_data_from_jams",
+    "compute_tablature",
+
+    # Feature-specific extractors
     "extract_tab_features",
     "extract_onsets_offsets",
-    "extract_notes_and_pitch_list",
     "extract_multi_pitch",
+
+    # Tablature transformations
     "compute_tablature_adj",
     "compute_tablature_rel",
-    "build_tab_npz"
+    "compute_tablature_adj_spatial",
+    "compute_tablature_rel_spatial",
+
+    # Utility functions
+    "midi_to_freq",
+    "extract_open_string_midi_from_jams",
 ]

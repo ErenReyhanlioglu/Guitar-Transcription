@@ -1,3 +1,4 @@
+#common.py
 from abc import ABC, abstractmethod
 import librosa
 import numpy as np
@@ -81,7 +82,7 @@ class FeatureModule(ABC):
         return feats
 
     @abstractmethod
-    def process_audio(self, audio):
+    def process_audio(self, audio, target_frames=None): 
         """
         Subclasses must implement this method to return [C, F, T] shaped features.
         """
@@ -93,10 +94,11 @@ class FeatureModule(ABC):
         """
         return librosa.amplitude_to_db(feats, ref=np.max)
 
-    def post_proc(self, feats, original_audio=None):
+    def post_proc(self, feats, original_audio=None, target_frames=None): 
         """
         Optional dB conversion + normalization and shape expansion to [1, ..., T].
         If center=True and original_audio is provided, trimming is applied.
+        Finally, aligns the feature to the target_frames if provided.
         """
         if self.center and original_audio is not None:
             feats = self.trim_center(feats, original_audio)
@@ -105,6 +107,9 @@ class FeatureModule(ABC):
             feats = self.to_decibels(feats)
             feats = (feats + 80) / 80  # Normalize from [-80, 0] dB → [0, 1]
 
+        if target_frames is not None and feats.shape[-1] > target_frames:
+            feats = feats[..., :target_frames]
+        
         return np.expand_dims(feats, axis=0)  # [1, F, T] or [1, H, F, T]
 
     def get_times(self, audio):
