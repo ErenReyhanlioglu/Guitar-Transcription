@@ -1,0 +1,34 @@
+/Automatic Guitar Transcription/
+│
+├── configs/                # Deney parametrelerini içeren .yaml dosyaları
+│   ├── tabcnn_config.yaml
+│   ├── fretnet_config.yaml
+│   └── ...
+│
+├── outputs/                # Tüm eğitim çıktıları ve versiyonlanmış sonuçlar
+│   ├── TabCNN/
+│   │   └── V0_20250722_202900/ 
+│   │       ├── config.yaml
+│   │       ├── model_best.pt
+│   │       └── ...
+│   └── ... 
+│
+└── src/                    # Projenin tüm Python kaynak kodu
+    ├── __init__.py
+    ├── data_loader.py      # Dataset sınıfı (.npz'leri okur)
+    ├── trainer.py          # Eğitim, doğrulama ve test döngülerini yönetir
+    │
+    ├── models/             # Model mimarilerinin bulunduğu klasör
+    │   ├── __init__.py     # Modelleri çağırmak için fabrika fonksiyonu
+    │   ├── base_model.py   # Tüm modellerin miras alacağı ortak temel sınıf
+    │   ├── tabcnn.py
+    │   ├── fretnet.py
+    │   ├── crnn.py
+    │   └── transformer.py
+    │
+    └── utils/              # Yardımcı ve yeniden kullanılabilir fonksiyonlar
+        ├── __init__.py
+        ├── experiment.py   # Otomatik deney klasörü oluşturma
+        ├── losses.py       # Özel kayıp fonksiyonları
+        ├── metrics.py      # Değerlendirme metrikleri
+        └── plotting.py     # Sonuçları görselleştirme

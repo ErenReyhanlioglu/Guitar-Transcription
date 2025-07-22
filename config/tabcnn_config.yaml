@@ -1,0 +1,54 @@
+# Proje ve deneyin genel bilgileri
+project_name: "Automatic_Guitar_Transcription"
+experiment_name: "TabCNN_v1_GuitarSet"
+
+# Veri yükleme ve hazırlama ayarları
+data:
+  # .npz dosyalarının bulunduğu ana klasörün yolu
+  path: "/content/drive/MyDrive/Automatic Guitar Transcription/Data Set/GuitarSet/features_sr22050_all/"
+  # Modelin her seferinde göreceği zaman dilimi (frame) sayısı
+  window_size: 200
+  # Veri yükleyicinin batch boyutu
+  batch_size: 30
+  # Sessizlik sınıfı (-1) etiketlerini dahil edip etmeme
+  include_silence: False
+  # Sessizlik sınıfının sayısal etiketi (eğer dahil edilirse)
+  silence_class: 20
+
+# Model mimarisi ve parametreleri
+model:
+  # src/models/__init__.py içindeki get_model fonksiyonunun kullanacağı ad
+  name: "TabCNN"
+  # Modelin __init__ metoduna gönderilecek parametreler
+  params:
+    in_channels: 1      # Giriş spektrogramının kanal sayısı (CQT için 1, HCQT için 6 vb.)
+    num_freq: 192       # Frekans bandı sayısı
+    num_strings: 6      # Gitar teli sayısı
+    num_classes: 20     # Tahmin edilecek sınıf sayısı (include_silence: False ise 20 perde)
+
+# Kayıp fonksiyonu ayarları
+loss:
+  # Sınıf dengesizliğini gidermek için ağırlık kullanılsın mı?
+  use_class_weights: True
+  # Ağırlık hesaplanırken sessizlik sınıfına uygulanacak çarpan
+  class_weights_silence_factor: 0.25
+  # Focal Loss kullanılsın mı?
+  use_focal: True
+  # Focal Loss için gamma değeri
+  focal_loss_gamma: 2.0
+
+# Eğitim süreci ayarları
+training:
+  # Kullanılacak optimizer
+  optimizer: "Adam"
+  # Öğrenme oranı
+  learning_rate: 0.0005
+  # Toplam epoch sayısı
+  epochs: 30
+  # Eğitim için kullanılacak cihaz (cuda veya cpu)
+  device: "cuda"
+  # Öğrenme oranı zamanlayıcısı ayarları
+  scheduler:
+    name: "StepLR"
+    step_size: 500
+    gamma: 0.5

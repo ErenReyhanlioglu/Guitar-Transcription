@@ -1,0 +1,13 @@
+torch
+numpy
+pandas
+scikit-learn
+matplotlib
+seaborn
+librosa
+soundfile
+jams
+pyyaml
+pytest
+tensorboard
+ipython
