@@ -1,23 +1,3 @@
-"""
-Purpose:
-    This module contains custom loss functions tailored for the guitar
-    transcription task.
-
-Dependencies:
-    - torch
-    - torch.nn.functional
-
-Current Status:
-    - `SoftmaxGroups`: A crucial class that treats the multi-task output (6 strings)
-      as independent classification problems, applying a separate softmax to each.
-    - `FocalLoss`: An implementation of Focal Loss to help mitigate class imbalance
-      issues, which are common in tablature data (some frets are played rarely).
-
-Future Plans:
-    - [ ] Implement other loss functions for experimentation, such as
-          Cross-Entropy with Label Smoothing.
-"""
-
 import torch
 import torch.nn as nn
 import torch.nn.functional as F

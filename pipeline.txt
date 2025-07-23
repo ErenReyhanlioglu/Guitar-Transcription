@@ -1,5 +1,4 @@
 /Automatic Guitar Transcription/
-│
 ├── configs/                # Deney parametrelerini içeren .yaml dosyaları
 │   ├── tabcnn_config.yaml
 │   ├── fretnet_config.yaml

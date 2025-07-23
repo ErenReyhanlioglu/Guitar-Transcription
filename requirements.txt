@@ -11,3 +11,5 @@ pyyaml
 pytest
 tensorboard
 ipython
+torch-summary
+tensorboard
