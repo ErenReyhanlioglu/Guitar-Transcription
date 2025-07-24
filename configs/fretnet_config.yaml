@@ -1,0 +1,77 @@
+project_name: "Automatic_Guitar_Transcription"
+experiment_name: "FretNet_v1_SynthTab"
+
+data:
+  drive_data_path: "/content/drive/MyDrive/Automatic Guitar Transcription/Data Set/GuitarSet/features_sr22050_all/"
+  local_data_path: "/content/local_guitarset_data/"
+  path: "/content/local_guitarset_data/"
+  window_size: 200
+  batch_size: 30
+  validation_split_size: 0.2
+  random_state: 42
+  num_workers: 4
+  max_fret: 19 
+  include_silence: True
+
+model:
+  name: "FretNet"
+  params:
+    in_channels: 1
+    num_freq: 192 
+    num_strings: 6
+    rnn_type: "LSTM"       
+    rnn_hidden_size: 128     
+    rnn_num_layers: 2        
+    rnn_bidirectional: True    
+    rnn_dropout: 0.25         
+
+loss:
+  use_class_weights: True
+  class_weights_silence_factor: 0.25
+  use_focal: True
+  focal_loss_gamma: 2.0
+
+training:
+  optimizer:
+    active_optimizer: "Adam"
+    configurations:
+      Adam:
+        params:
+          lr: 0.0005
+      AdamW:
+        params:
+          lr: 0.0005
+          weight_decay: 0.01
+  
+  epochs: 60
+  device: "cuda"
+  use_mixed_precision: True
+
+  early_stopping:
+    enabled: True       
+    monitor: "val_loss"   
+    patience: 10          
+    min_delta: 0.0001     
+    mode: "min" 
+
+  logging_and_checkpointing:
+    use_tensorboard: True
+    resume_from_checkpoint: null
+    save_epoch_checkpoint_interval: 15
+
+  scheduler:
+    active_scheduler: "StepLR"
+    configurations:
+      ReduceLROnPlateau:
+        params:
+          monitor: "val_f1"
+          mode: "max"
+          factor: 0.2
+          patience: 5
+          verbose: True
+          min_lr: 0.000001
+      StepLR:
+        params:
+          step_size: 10
+          gamma: 0.5
+          verbose: True
