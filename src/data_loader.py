@@ -1,9 +1,9 @@
 import os
 import time
-import subprocess # Shell komutlarını çalıştırmak için
+import subprocess 
 import numpy as np
 import torch
-import tqdm
+from tqdm import tqdm
 from torch.utils.data import Dataset, DataLoader
 from sklearn.model_selection import train_test_split
 
