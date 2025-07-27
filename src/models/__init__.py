@@ -1,15 +1,15 @@
 # src/models/__init__.py
-
 from .tabcnn import TabCNN
 from .fretnet import FretNet
-# from .crnn import CRNN             
-# from .transformer import Transformer   
-
+from .transformer import Transformer
+# from .crnn import CRNN           
+   
 MODEL_REGISTRY = {
     "tabcnn": TabCNN,
     "fretnet": FretNet,
+    "transformer": Transformer,    
     # "crnn": CRNN,
-    # "transformer": Transformer
+    
 }
 
 def get_model(model_name, model_params):

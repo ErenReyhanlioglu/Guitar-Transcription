@@ -84,7 +84,9 @@ def get_scheduler(optimizer, config):
         return StepLR(optimizer, **params)
     
     elif name_lower == 'reducelronplateau':
-        return ReduceLROnPlateau(optimizer, **params)
-    
+        if 'monitor' in params:
+            params.pop('monitor') 
+            
+        return ReduceLROnPlateau(optimizer, **params)    
     else:
         raise ValueError(f"Scheduler '{active_scheduler_name}' not supported.")
