@@ -29,9 +29,9 @@ def build_tab_npz(
 ) -> dict:
     
     jam = jams.load(jams_path, validate=False)
-    audio, sr_orig = sf.read(audio_path)
+    audio, sr_orig = sf.read(audio_path, dtype='float32')
     if sr_orig != sr:
-        audio = librosa.resample(audio, orig_sr=sr_orig, target_sr=sr)
+        audio = librosa.resample(audio, orig_sr=sr_orig, target_sr=sr, dtype=np.float32)
 
     tempo_annotations = [ann for ann in jam.annotations if ann.namespace == 'tempo']
     bpm = 120.0

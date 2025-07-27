@@ -40,17 +40,14 @@ class FeatureCombo(FeatureModule):
         feats = {}
         for mod in self.modules:
             name = mod.__class__.__name__.lower()
-            print(f"[START] {name}")
             try:
                 output = mod.process_audio(audio, target_frames=target_frames)
                 if output is not None:
-                    print(f"[OK] {name}: shape = {output.shape}")
                     feats[name] = output
                 else:
                     print(f"[WARN] {name} returned None.")
             except Exception as e:
                 print(f"[ERROR] {name} failed: {e}")
-        print(f"[INFO] Final extracted features: {list(feats.keys())}")
         return feats
 
     def get_sample_rate(self):

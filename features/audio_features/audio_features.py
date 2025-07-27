@@ -74,15 +74,19 @@ class MelSpec(FeatureModule):
     Mel spectrogram feature extractor.
     """
     def __init__(self, sample_rate=22050, hop_length=512, n_mels=128,
+                 n_fft=2048,  
                  decibels=True, center=False):
         super().__init__(sample_rate, hop_length, n_mels, decibels, center)
         self.n_mels = n_mels
+        self.n_fft = n_fft 
 
     def process_audio(self, audio, target_frames=None): 
         audio = self.frame_pad(audio)
         mel = librosa.feature.melspectrogram(y=audio, sr=self.sample_rate,
                                              hop_length=self.hop_length,
-                                             n_mels=self.n_mels, center=self.center)
+                                             n_mels=self.n_mels,
+                                             n_fft=self.n_fft,  
+                                             center=self.center)
         return self.post_proc(mel, original_audio=audio, target_frames=target_frames)
 
 

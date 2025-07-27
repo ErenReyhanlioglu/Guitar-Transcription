@@ -1,9 +1,9 @@
 #utils.py
 import numpy as np
 import jams
-from utils.tab_features.onset_offset import extract_onsets_offsets, expand_onsets_offsets_harmonics
-from utils.tab_features.multi_pitch import extract_multi_pitch
-from utils.tab_features.transforms import (
+from features.tab_features.onset_offset import extract_onsets_offsets, expand_onsets_offsets_harmonics
+from features.tab_features.multi_pitch import extract_multi_pitch
+from features.tab_features.transforms import (
     compute_tablature_adj,
     compute_tablature_rel,
     compute_tablature_adj_spatial,
@@ -37,7 +37,7 @@ def extract_open_string_midi_from_jams(jams_path: str, num_strings: int = 6) -> 
             if 0 <= idx < num_strings:
                 open_midi[idx] = tuning
         except Exception as e:
-            print(f"⚠️ Sandbox parse error: {e}")
+            print(f"Sandbox parse error: {e}")
             continue
 
     return open_midi  # [string_1, string_2, ..., string_6]
