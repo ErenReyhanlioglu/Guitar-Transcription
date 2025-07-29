@@ -23,7 +23,6 @@ class Trainer:
         self.experiment_path = experiment_path
         self.class_weights = class_weights
         self.writer = writer
-        if initial_history: self.history = initial_history
         
         if initial_history:
             self.history = initial_history
