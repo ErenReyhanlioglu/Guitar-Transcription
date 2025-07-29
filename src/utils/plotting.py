@@ -4,6 +4,8 @@ import numpy as np
 import seaborn as sns
 from matplotlib.patches import Rectangle
 from pathlib import Path
+import itertools
+import matplotlib.pyplot as plt
 
 import matplotlib
 matplotlib.use('Agg')
@@ -235,3 +237,40 @@ def plot_metrics(history: dict, metric_name: str, save_path: str or Path):
     plt.savefig(save_path, dpi=300)
     plt.close()
     print(f"✅ {metric_name.upper()} curve saved: {save_path}")
+
+def plot_confusion_matrix(cm, target_names, title='Confusion matrix', cmap=None, normalize=True):
+    """
+    This function prints and plots the confusion matrix.
+    Normalization can be applied by setting `normalize=True`.
+    """
+    if cmap is None:
+        cmap = plt.get_cmap('Blues')
+
+    plt.figure(figsize=(12, 10))
+    plt.imshow(cm, interpolation='nearest', cmap=cmap)
+    plt.title(title)
+    plt.colorbar()
+
+    if target_names is not None:
+        tick_marks = np.arange(len(target_names))
+        plt.xticks(tick_marks, target_names, rotation=90)
+        plt.yticks(tick_marks, target_names)
+
+    if normalize:
+        row_sums = cm.sum(axis=1)[:, np.newaxis]
+        cm = np.divide(cm.astype('float'), row_sums, out=np.zeros_like(cm, dtype=float), where=row_sums!=0)
+
+    thresh = cm.max() / 1.5 if normalize else cm.max() / 2
+    for i, j in itertools.product(range(cm.shape[0]), range(cm.shape[1])):
+        if normalize:
+            plt.text(j, i, "{:0.2f}".format(cm[i, j]),
+                     horizontalalignment="center",
+                     color="white" if cm[i, j] > thresh else "black")
+        else:
+            plt.text(j, i, "{:,}".format(cm[i, j]),
+                     horizontalalignment="center",
+                     color="white" if cm[i, j] > thresh else "black")
+
+    plt.tight_layout()
+    plt.ylabel('True label')
+    plt.xlabel('Predicted label')
