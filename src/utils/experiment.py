@@ -57,8 +57,7 @@ def save_model_summary(model, config, experiment_path):
         f.write(f"Model: {config['model']['name']}\n")
         f.write(f"Input Size: {input_size}\n\n")
         f.write(model_summary_str)
-    print(f"📄 Model summary saved: {summary_file_path}")
-
+    print(f"Model summary saved: {summary_file_path}")
 
 def generate_experiment_report(model, history, val_loader, config, experiment_path, device):
     print("\n" + "="*50)
@@ -79,25 +78,24 @@ def generate_experiment_report(model, history, val_loader, config, experiment_pa
         print("⚠️ Validation loader is empty. Cannot generate sample plots.")
         return
 
+    active_feature_name = config['data']['active_feature']
+    feature_key = config['data']['features'][active_feature_name]['key']
+
     model.eval()
     with torch.no_grad():
-        cqt_tensor = sample_batch["cqt"].to(device)
-        logits = model(cqt_tensor, apply_softmax=False)
+        feature_tensor = sample_batch[feature_key].to(device)
+        logits = model(feature_tensor, apply_softmax=False)
         
-        # (6, Time, 21) -> (6, Time)
         predicted_tab_tensor = torch.argmax(logits, dim=-1)
         predicted_tab_tensor[predicted_tab_tensor == config['data'].get('silence_class', 20)] = -1
 
-
-    cqt_np = cqt_tensor[0].cpu().numpy().squeeze()
+    feature_np = feature_tensor[0].cpu().numpy().squeeze()
 
     gt_tab_np = sample_batch["tablature"][0].cpu().numpy()
-
     pred_tab_np = predicted_tab_tensor[0].cpu().numpy().T
-
     hop_seconds = config['data']['hop_length'] / config['data']['sample_rate']
 
-    plot_spectrogram(cqt_np, hop_seconds, os.path.join(charts_path, "sample_spectrogram.png"))
+    plot_spectrogram(feature_np, hop_seconds, os.path.join(charts_path, "sample_spectrogram.png"))
     
     plot_guitar_tablature(
         gt_tab_np, hop_seconds, 

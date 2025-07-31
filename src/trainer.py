@@ -1,4 +1,5 @@
 # src/trainer.py
+
 import torch
 import numpy as np
 import os
@@ -12,7 +13,6 @@ from .utils.analyze_errors import analyze as run_error_analysis
 
 class Trainer:
     def __init__(self, model, train_loader, val_loader, optimizer, scheduler, device, config, experiment_path, class_weights=None, writer=None, initial_history=None):
-        """Trainer nesnesini başlatır."""
         self.model = model
         self.train_loader = train_loader
         self.val_loader = val_loader
@@ -24,6 +24,9 @@ class Trainer:
         self.class_weights = class_weights
         self.writer = writer
         
+        active_feature_name = self.config['data']['active_feature']
+        self.feature_key = self.config['data']['features'][active_feature_name]['key']
+
         if initial_history:
             self.history = initial_history
         else:
@@ -67,9 +70,10 @@ class Trainer:
         all_preds, all_targets = [], []
         with torch.no_grad():
             for batch in data_loader:
-                cqt, tab = batch["cqt"].to(self.device), batch["tablature"].to(self.device)
+                feature_data = batch[self.feature_key].to(self.device)
+                tab = batch["tablature"].to(self.device)
                 with autocast(enabled=self.use_amp):
-                    logits = self.model(cqt, apply_softmax=False)
+                    logits = self.model(feature_data, apply_softmax=False)
                     loss = self._compute_loss(logits, tab)
                 total_loss += loss.item()
                 total_batches += 1
@@ -132,12 +136,13 @@ class Trainer:
             all_train_preds, all_train_targets = [], [] 
 
             for batch in self.train_loader:
-                cqt, tab = batch["cqt"].to(self.device), batch["tablature"].to(self.device)
+                feature_data = batch[self.feature_key].to(self.device)
+                tab = batch["tablature"].to(self.device)
                 
                 self.optimizer.zero_grad(set_to_none=True) 
                 
                 with autocast(enabled=self.use_amp):
-                    logits = self.model(cqt, apply_softmax=False)
+                    logits = self.model(feature_data, apply_softmax=False)
                     loss = self._compute_loss(logits, tab)
 
                 self.scaler.scale(loss).backward()

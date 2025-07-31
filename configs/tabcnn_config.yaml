@@ -1,74 +1,106 @@
 project_name: "Automatic_Guitar_Transcription"
-experiment_name: "TabCNN_v1_GuitarSet"
+experiment_name: "TabCNN_GuitarSet" 
+
+dataset: "GuitarSet" 
+
+dataset_configs:
+  GuitarSet:
+    drive_data_path: "/content/drive/MyDrive/Automatic Guitar Transcription/feature_extraction/guitarset_all_npz/" 
+    local_data_path: "/content/local_guitarset_data/" 
+    active_feature: "hcqt" 
+    features:
+      cqt:
+        key: "cqt"
+        in_channels: 1
+        num_freq: 192
+      hcqt:
+        key: "hcqt"
+        in_channels: 6
+        num_freq: 144
+      mel:
+        key: "mel"
+        in_channels: 1
+        num_freq: 229
+
+  SynthTab:
+    drive_data_path: "/content/drive/MyDrive/Automatic Guitar Transcription/feature_extraction/synthtab_all_npz/"
+    local_data_path: "/content/local_synthtab_data/"
+    active_feature: "hcqt" 
+    features:
+      cqt:
+        key: "cqt"
+        in_channels: 1
+        num_freq: 180
+      hcqt:
+        key: "hcqt"
+        in_channels: 6 
+        num_freq: 180
+      melspec:
+        key: "melspec"
+        in_channels: 1
+        num_freq: 256
 
 data:
-  drive_data_path: "/content/drive/MyDrive/Automatic Guitar Transcription/Data Set/GuitarSet/features_sr22050_all/"
-  local_data_path: "/content/local_guitarset_data/"
-  path: "/content/local_guitarset_data/"
-  window_size: 200
-  batch_size: 30
-  validation_split_size: 0.2
-  random_state: 42
-  num_workers: 4
+  window_size: 200 
+  batch_size: 30 
+  validation_split_size: 0.2 
+  random_state: 42 
+  num_workers: 4 
   max_fret: 19 
-  include_silence: True
+  include_silence: False 
 
 model:
-  name: "TabCNN"
+  name: "TabCNN" 
   params:
-    in_channels: 1
-    num_freq: 192
-    num_strings: 6
-    # NOT: num_classes parametresi, config_helpers.py içindeki
-    # process_config fonksiyonu tarafından otomatik olarak hesaplanır.
+    num_strings: 6 
 
 loss:
-  use_class_weights: True
-  class_weights_silence_factor: 0.25
-  use_focal: True
-  focal_loss_gamma: 2.0
+  use_class_weights: True 
+  class_weights_silence_factor: 0.25 
+  use_focal: True 
+  focal_loss_gamma: 2.0 
 
 training:
   optimizer:
-    active_optimizer: "Adam"
+    active_optimizer: "Adam" 
     configurations:
       Adam:
         params:
-          lr: 0.0005
+          lr: 0.0005 
       AdamW:
         params:
-          lr: 0.0005
-          weight_decay: 0.01
+          lr: 0.0005 
+          weight_decay: 0.01 
   
-  epochs: 60
-  device: "cuda"
-  use_mixed_precision: True
+  epochs: 60 
+  device: "cuda" 
+  use_mixed_precision: True 
 
   early_stopping:
-    enabled: True       
-    monitor: "val_loss"   
-    patience: 10          
-    min_delta: 0.0001     
-    mode: "min" 
+    enabled: True 
+    monitor: "val_f1" 
+    patience: 10 
+    min_delta: 0.0001 
+    mode: "max" 
 
   logging_and_checkpointing:
-    use_tensorboard: True
-    resume_from_checkpoint: null
-    save_epoch_checkpoint_interval: 10
+    use_tensorboard: True 
+    resume_from_checkpoint: null 
+    save_epoch_checkpoint_interval: 10 
 
   scheduler:
-    active_scheduler: "ReduceLROnPlateau"
+    active_scheduler: "StepLR" 
     configurations:
       ReduceLROnPlateau:
         params:
-          monitor: "val_f1"
-          mode: "max"
-          factor: 0.2
-          patience: 5
-          verbose: True
-          min_lr: 0.000001
+          monitor: "val_f1" 
+          mode: "max" 
+          factor: 0.2 
+          patience: 5 
+          verbose: True 
+          min_lr: 0.000001 
       StepLR:
         params:
-          step_size: 10
+          step_size: 10 
           gamma: 0.5
-          verbose: True
+          verbose: True 

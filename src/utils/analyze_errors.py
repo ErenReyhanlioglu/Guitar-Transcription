@@ -15,19 +15,18 @@ if PROJECT_ROOT not in sys.path:
     sys.path.append(PROJECT_ROOT)
 
 from src.models import TabCNN, FretNet, Transformer
-from src.data_loader import TablatureDataset 
+from src.data_loader import TablatureDataset
 from torch.utils.data import DataLoader
 from src.utils.metrics import finalize_output
 from src.utils.plotting import plot_confusion_matrix
 from src.utils.config_helpers import process_config
-
 
 def analyze(experiment_path, val_loader=None):
     EXP_CONFIG_PATH = os.path.join(experiment_path, "config.yaml")
     with open(EXP_CONFIG_PATH, 'r') as f:
         raw_exp_config = yaml.safe_load(f)
     config = process_config(raw_exp_config)
-    
+
     model_name = config['model']['name']
     model_params = config['model']['params']
 
@@ -43,23 +42,25 @@ def analyze(experiment_path, val_loader=None):
         print("\nUsing the provided validation dataloader. Skipping creation.")
     else:
         print("\nValidation dataloader not provided. Creating one from scratch...")
-        original_config_name = f"{model_name.lower()}_config.yaml"
-        BASE_CONFIG_PATH = os.path.join(PROJECT_ROOT, 'configs', original_config_name)
-        with open(BASE_CONFIG_PATH, 'r') as f:
-            base_config = yaml.safe_load(f)
-            
-        data_config = base_config['data']
+        
+        data_config = config['data']
         data_root_path = data_config.get('local_data_path')
         if not data_root_path or not os.path.exists(data_root_path):
             data_root_path = os.path.join(PROJECT_ROOT, data_config.get('drive_data_path'))
         
+        print(f"Searching for .npz files in: {data_root_path}")
         all_files = sorted(glob(os.path.join(data_root_path, '*.npz')))
+
+        if not all_files:
+            raise FileNotFoundError(f"No .npz files found in {data_root_path}. Check the path in your config.")
+
         _, validation_paths = train_test_split(
             all_files,
             test_size=data_config['validation_split_size'],
             random_state=data_config['random_state']
         )
-        val_dataset = TablatureDataset(validation_paths, base_config)
+        
+        val_dataset = TablatureDataset(validation_paths, config)
         val_loader = DataLoader(
             val_dataset, batch_size=data_config['batch_size'], shuffle=False,
             num_workers=data_config.get('num_workers', 0),
@@ -67,10 +68,13 @@ def analyze(experiment_path, val_loader=None):
         )
         print(f"Validation loader created with {len(val_dataset)} samples.")
 
+    active_feature_name = config['data']['active_feature']
+    feature_key = config['data']['features'][active_feature_name]['key']
+
     all_preds, all_targets = [], []
     print("\nMaking predictions on the validation set...")
     for batch in val_loader:
-        inputs = batch['cqt'].to(device) 
+        inputs = batch[feature_key].to(device)
         targets = batch['tablature']
         logits = model(inputs)
         preds = finalize_output(
@@ -106,7 +110,6 @@ def analyze(experiment_path, val_loader=None):
         print(f"Plot for String {s+1} saved.")
     
     print("\nAnalysis complete. All plots have been saved.")
-
 
 if __name__ == '__main__':
     parser = argparse.ArgumentParser(description="Error Analysis Script for Guitar Transcription Models")

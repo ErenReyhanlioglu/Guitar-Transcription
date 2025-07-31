@@ -14,18 +14,21 @@ class TablatureDataset(Dataset):
         self.window_size = config['data']['window_size']
         self.hop_size = config['data'].get('hop_size', self.window_size // 2)
         
+        active_feature_name = self.config['data']['active_feature']
+        self.feature_key = self.config['data']['features'][active_feature_name]['key']
+
         self.max_fret = config['data'].get('max_fret', 19)
         self.include_silence = config['data'].get('include_silence', False)
 
         self.samples_metadata = []
-        print("Creating dataset map (not loading data into RAM)...")
+        print(f"Creating dataset map using feature '{self.feature_key}'...")
         for i, path in enumerate(tqdm(self.npz_paths, desc="Mapping samples")):
             with np.load(path) as data:
-                T = data["cqt"].shape[-1]
+                T = data[self.feature_key].shape[-1]
             
-            num_windows_in_file = (T - self.window_size) // self.hop_size + 1
-            for j in range(num_windows_in_file):
-                self.samples_metadata.append({'file_idx': i, 'start_frame': j * self.hop_size})
+                num_windows_in_file = (T - self.window_size) // self.hop_size + 1
+                for j in range(num_windows_in_file):
+                    self.samples_metadata.append({'file_idx': i, 'start_frame': j * self.hop_size})
 
     def __len__(self):
         return len(self.samples_metadata)
@@ -37,14 +40,17 @@ class TablatureDataset(Dataset):
         
         path = self.npz_paths[file_idx]
         with np.load(path) as data:
-            cqt_full = data["cqt"]
+            feature_data_full = data[self.feature_key]
             tab_full = data["tablature"]
 
+        if feature_data_full.ndim == 4:
+            feature_data_full = feature_data_full.squeeze(0)
+
         end_frame = start_frame + self.window_size
-        cqt_window = cqt_full[:, :, start_frame:end_frame]
+        feature_window = feature_data_full[:, :, start_frame:end_frame]
         tab_window = tab_full[:, start_frame:end_frame]
         
-        cqt = torch.tensor(cqt_window, dtype=torch.float32)
+        feature_tensor = torch.tensor(feature_window, dtype=torch.float32)
         tab = torch.tensor(tab_window, dtype=torch.long)
         
         tab[tab > self.max_fret] = -1
@@ -53,14 +59,9 @@ class TablatureDataset(Dataset):
             silence_class = self.config['data'].get('silence_class', 20)
             tab[tab == -1] = silence_class
         
-        return {"cqt": cqt, "tablature": tab}
+        return {self.feature_key: feature_tensor, "tablature": tab}
 
 def get_dataloaders(config):
-    """
-    Config dosyasını kullanarak:
-    1. Verinin yerel kopyasının olup olmadığını kontrol eder, yoksa Drive'dan kopyalar.
-    2. Train ve validation DataLoader'larını oluşturur ve döndürür.
-    """
     drive_path = config['data']['drive_data_path']
     local_path = config['data']['local_data_path']
     
