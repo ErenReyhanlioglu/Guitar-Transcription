@@ -1,0 +1,105 @@
+project_name: Automatic_Guitar_Transcription
+experiment_name: FretNet_GuitarSet_FineTuning
+dataset: GuitarSet
+dataset_configs:
+  GuitarSet:
+    drive_data_path: /content/drive/MyDrive/Automatic Guitar Transcription/feature_extraction/guitarset_all_npz/
+    local_data_path: /content/local_guitarset_data/
+    active_feature: hcqt
+    features:
+      cqt:
+        key: cqt
+        in_channels: 1
+        num_freq: 144
+      hcqt:
+        key: hcqt
+        in_channels: 6
+        num_freq: 144
+      mel:
+        key: mel
+        in_channels: 1
+        num_freq: 256
+  SynthTab:
+    drive_data_path: /content/drive/MyDrive/Automatic Guitar Transcription/feature_extraction/synthtab_all_npz/most_active_frames/
+    local_data_path: /content/local_synthtab_data/
+    active_feature: hcqt
+    features:
+      cqt:
+        key: cqt
+        in_channels: 1
+        num_freq: 144
+      hcqt:
+        key: hcqt
+        in_channels: 6
+        num_freq: 144
+      melspec:
+        key: melspec
+        in_channels: 1
+        num_freq: 256
+data:
+  window_size: 200
+  sample_rate: 22050
+  hop_length: 512
+  batch_size: 30
+  validation_split_size: 0.2
+  random_state: 42
+  num_workers: 2
+  max_fret: 19
+  silence_class: 20
+  include_silence: true
+model:
+  name: FretNet
+  params:
+    num_strings: 6
+    num_classes: 21
+    rnn_type: LSTM
+    rnn_hidden_size: 128
+    rnn_num_layers: 2
+    rnn_bidirectional: true
+    rnn_dropout: 0.25
+loss:
+  use_class_weights: true
+  class_weights_silence_factor: 0.25
+  use_focal: true
+  focal_loss_gamma: 2.0
+training:
+  pretrained_model_path: /content/drive/MyDrive/Automatic Guitar Transcription/outputs/FretNet/V19/model_best.pt
+  optimizer:
+    active_optimizer: Adam
+    configurations:
+      Adam:
+        params:
+          lr: 5.0e-05
+      AdamW:
+        params:
+          lr: 5.0e-05
+          weight_decay: 0.01
+  epochs: 100
+  device: cuda
+  use_mixed_precision: true
+  early_stopping:
+    enabled: true
+    monitor: val_f1
+    patience: 8
+    min_delta: 0.0001
+    mode: max
+  logging_and_checkpointing:
+    use_tensorboard: true
+    resume_from_checkpoint: null
+    save_epoch_checkpoint_interval: 10
+  scheduler:
+    active_scheduler: StepLR
+    configurations:
+      ReduceLROnPlateau:
+        params:
+          monitor: val_f1
+          mode: max
+          factor: 0.5
+          patience: 3
+          verbose: true
+          min_lr: 1.0e-07
+      StepLR:
+        params:
+          step_size: 5
+          gamma: 0.8
+          verbose: true

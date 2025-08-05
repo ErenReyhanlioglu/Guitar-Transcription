@@ -128,7 +128,7 @@ def plot_notes(note_grid, hop_seconds, save_path, title='Notes Visualization', y
     Path(save_path).parent.mkdir(parents=True, exist_ok=True)
     plt.savefig(save_path, dpi=300)
     plt.close()
-    print(f"Notes plot saved: {save_path}")
+    print(f"✅ Notes plot saved: {save_path}")
 
 def plot_pitch_list(times, pitch_data, save_path, title='Pitch Contour'):
     """
@@ -200,7 +200,7 @@ def plot_guitar_tablature(tab_data, hop_seconds, save_path, title='Guitar Tablat
     Path(save_path).parent.mkdir(parents=True, exist_ok=True)
     plt.savefig(save_path, dpi=300)
     plt.close()
-    print(f"Guitar tablature plot saved: {save_path}")
+    print(f"✅ Guitar tablature plot saved: {save_path}")
 
 def plot_loss_curves(history: dict, save_path: str or Path):
     """Plots and saves the training and validation loss curves."""
