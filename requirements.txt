@@ -13,3 +13,4 @@ tensorboard
 ipython
 torch-summary
 tensorboard
+itertools

@@ -1,27 +1,63 @@
-# src/utils/plotting.py
 import matplotlib.pyplot as plt
 import numpy as np
-import seaborn as sns
-from matplotlib.patches import Rectangle
-from pathlib import Path
 import itertools
-import matplotlib.pyplot as plt
-
+from pathlib import Path
+from matplotlib.patches import Rectangle
 import matplotlib
+
+# Use a non-interactive backend to prevent issues in environments without a GUI
 matplotlib.use('Agg')
 
-def _estimate_hop_length(times):
-    """Estimate the hop length in seconds from a series of time points."""
-    return np.mean(np.diff(times)) if len(times) > 1 else 0.02 
+def plot_loss_curves(history: dict, save_path: str or Path):
+    """Plots and saves the training and validation loss curves from the history dictionary."""
+    plt.figure(figsize=(12, 7))
+    if 'train_loss' in history and 'val_loss' in history:
+        plt.plot(history['train_loss'], label='Training Loss', color='royalblue', marker='o', markersize=4, linestyle='--')
+        plt.plot(history['val_loss'], label='Validation Loss', color='orangered', marker='x', markersize=5)
+        plt.title('Training and Validation Loss Curve', fontsize=16)
+        plt.xlabel('Epoch', fontsize=12)
+        plt.ylabel('Loss', fontsize=12)
+        plt.legend(fontsize=10)
+        plt.grid(True, linestyle='--', linewidth=0.5)
+        plt.tight_layout()
+        Path(save_path).parent.mkdir(parents=True, exist_ok=True)
+        plt.savefig(save_path, dpi=300)
+    else:
+        print("Warning: 'train_loss' or 'val_loss' not found in history. Skipping loss plot.")
+    plt.close()
 
-def _unroll_pitch_list(times, pitch_list):
-    """Converts a list of pitch arrays into plottable coordinates."""
-    unrolled_times, unrolled_pitches = [], []
-    for t, p in zip(times, pitch_list):
-        if p.size > 0:
-            unrolled_times.extend([t] * len(p))
-            unrolled_pitches.extend(p)
-    return np.array(unrolled_times), np.array(unrolled_pitches)
+# --- GÜNCELLENDİ: Daha esnek metrik çizdirme fonksiyonu ---
+def plot_metrics_custom(history: dict, val_metric_key: str, train_metric_key: str, plot_title: str, save_path: str or Path):
+    """
+    Plots and saves a specific training and validation metric curve from the history dictionary.
+    
+    Args:
+        history (dict): The training history dictionary.
+        val_metric_key (str): The key for the validation metric in the history dict (e.g., 'val_tab_f1').
+        train_metric_key (str): The key for the training metric in the history dict (e.g., 'train_tab_f1').
+        plot_title (str): The title for the plot.
+        save_path (str or Path): The path to save the plot image.
+    """
+    if val_metric_key not in history:
+        print(f"Warning: Validation metric '{val_metric_key}' not found in history. Skipping plot.")
+        return
+
+    plt.figure(figsize=(12, 7))
+    
+    if train_metric_key in history:
+        plt.plot(history[train_metric_key], label=f'Training {plot_title}', color='royalblue', marker='o', markersize=4, linestyle='--')
+    
+    plt.plot(history[val_metric_key], label=f'Validation {plot_title}', color='orangered', marker='x', markersize=5)
+    
+    plt.title(f'Training and Validation {plot_title} Curve', fontsize=16)
+    plt.xlabel('Epoch', fontsize=12)
+    plt.ylabel(plot_title, fontsize=12)
+    plt.legend(fontsize=10)
+    plt.grid(True, linestyle='--', linewidth=0.5)
+    plt.tight_layout()
+    Path(save_path).parent.mkdir(parents=True, exist_ok=True)
+    plt.savefig(save_path, dpi=300)
+    plt.close()
 
 def _find_notes(note_grid, hop_seconds):
     """
@@ -47,23 +83,7 @@ def _find_notes(note_grid, hop_seconds):
                 offset_time = (offset_frame + 1) * hop_seconds
                 notes.append({'pitch': i, 'onset': onset_time, 'offset': offset_time})
     return notes
-
-def plot_waveform(samples, sample_rate, save_path, title='Audio Waveform'):
-    """Plots and saves a 1D audio waveform."""
-    plt.figure(figsize=(15, 5))
-    times = np.arange(len(samples)) / sample_rate
-    plt.plot(times, samples, color='black', linewidth=0.5)
-    plt.title(title, fontsize=16)
-    plt.xlabel('Time (s)', fontsize=12)
-    plt.ylabel('Amplitude', fontsize=12)
-    plt.xlim(0, times[-1])
-    plt.grid(True, linestyle='--', alpha=0.6)
-    plt.tight_layout()
-    Path(save_path).parent.mkdir(parents=True, exist_ok=True)
-    plt.savefig(save_path, dpi=300)
-    plt.close()
-    print(f"✅ Waveform plot saved: {save_path}")
-
+    
 def plot_spectrogram(spec_data, hop_seconds, save_path, title='Spectrogram', y_axis='Frequency Bin'):
     """Plots and saves a 2D time-frequency representation (e.g., CQT, STFT)."""
     plt.figure(figsize=(15, 6))
@@ -78,7 +98,6 @@ def plot_spectrogram(spec_data, hop_seconds, save_path, title='Spectrogram', y_a
     Path(save_path).parent.mkdir(parents=True, exist_ok=True)
     plt.savefig(save_path, dpi=300)
     plt.close()
-    print(f"✅ Spectrogram plot saved: {save_path}")
 
 def plot_pianoroll(pianoroll, hop_seconds, save_path, title='Piano Roll', low_midi=21):
     """
@@ -98,58 +117,8 @@ def plot_pianoroll(pianoroll, hop_seconds, save_path, title='Piano Roll', low_mi
     Path(save_path).parent.mkdir(parents=True, exist_ok=True)
     plt.savefig(save_path, dpi=300)
     plt.close()
-    print(f"✅ Piano roll plot saved: {save_path}")
 
-def plot_notes(note_grid, hop_seconds, save_path, title='Notes Visualization', y_axis='MIDI Pitch', low_val=21):
-    """
-    Plots notes from a grid as discrete rectangles.
-    `note_grid` is a 2D binary numpy array (num_pitches/strings x num_frames).
-    """
-    fig, ax = plt.subplots(figsize=(15, 6))
-    notes = _find_notes(note_grid, hop_seconds)
-    
-    for note in notes:
-        pitch = note['pitch'] + low_val
-        onset = note['onset']
-        duration = note['offset'] - note['onset']
-        rect = Rectangle((onset, pitch - 0.5), duration, 1, 
-                         linewidth=1, edgecolor='darkblue', facecolor='skyblue')
-        ax.add_patch(rect)
-        
-    ax.set_title(title, fontsize=16)
-    ax.set_xlabel('Time (s)', fontsize=12)
-    ax.set_ylabel(y_axis, fontsize=12)
-    if notes:
-        pitches = [n['pitch'] for n in notes]
-        ax.set_ylim(min(pitches) + low_val - 2, max(pitches) + low_val + 2)
-        ax.set_xlim(0, max(n['offset'] for n in notes))
-    ax.grid(True, linestyle='--', alpha=0.6)
-    plt.tight_layout()
-    Path(save_path).parent.mkdir(parents=True, exist_ok=True)
-    plt.savefig(save_path, dpi=300)
-    plt.close()
-    print(f"✅ Notes plot saved: {save_path}")
-
-def plot_pitch_list(times, pitch_data, save_path, title='Pitch Contour'):
-    """
-    Plots a list of active pitches over time as a scatter plot.
-    `pitch_data` is a list of numpy arrays, where each array holds pitches for a time frame.
-    """
-    fig, ax = plt.subplots(figsize=(15, 6))
-    unrolled_times, unrolled_pitches = _unroll_pitch_list(times, pitch_data)
-    
-    ax.scatter(unrolled_times, unrolled_pitches, s=5, color='red')
-    ax.set_title(title, fontsize=16)
-    ax.set_xlabel('Time (s)', fontsize=12)
-    ax.set_ylabel('MIDI Pitch', fontsize=12)
-    ax.grid(True, linestyle='--', alpha=0.6)
-    plt.tight_layout()
-    Path(save_path).parent.mkdir(parents=True, exist_ok=True)
-    plt.savefig(save_path, dpi=300)
-    plt.close()
-    print(f"✅ Pitch list plot saved: {save_path}")
-
-def plot_guitar_tablature(tab_data, hop_seconds, save_path, title='Guitar Tablature', string_tuning=(40, 45, 50, 55, 59, 64)):
+def plot_guitar_tablature(tab_data, hop_seconds, save_path, title='Guitar Tablature'):
     """
     Plots guitar tablature, showing fret numbers on string lines.
     `tab_data` is a 2D numpy array (6 x num_frames) where values are fret numbers (-1 for silence).
@@ -200,77 +169,47 @@ def plot_guitar_tablature(tab_data, hop_seconds, save_path, title='Guitar Tablat
     Path(save_path).parent.mkdir(parents=True, exist_ok=True)
     plt.savefig(save_path, dpi=300)
     plt.close()
-    print(f"✅ Guitar tablature plot saved: {save_path}")
-
-def plot_loss_curves(history: dict, save_path: str or Path):
-    """Plots and saves the training and validation loss curves."""
-    plt.figure(figsize=(12, 7))
-    plt.plot(history['train_loss'], label='Training Loss', color='royalblue', marker='o')
-    plt.plot(history['val_loss'], label='Validation Loss', color='orangered', marker='x')
-    plt.title('Training and Validation Loss Curve', fontsize=16)
-    plt.xlabel('Epoch', fontsize=12)
-    plt.ylabel('Loss', fontsize=12)
-    plt.legend(fontsize=10)
-    plt.grid(True, linestyle='--', linewidth=0.5)
-    plt.tight_layout()
-    Path(save_path).parent.mkdir(parents=True, exist_ok=True)
-    plt.savefig(save_path, dpi=300)
-    plt.close()
-    print(f"✅ Loss curve saved: {save_path}")
-
-def plot_metrics(history: dict, metric_name: str, save_path: str or Path):
-    """Plots and saves training and validation metrics (e.g., F1, accuracy)."""
-    train_key = f'train_{metric_name}'
-    val_key = f'val_{metric_name}'
-    if val_key not in history: return
-    plt.figure(figsize=(12, 7))
-    if train_key in history:
-        plt.plot(history[train_key], label=f'Training {metric_name.upper()}', color='royalblue', marker='o')
-    plt.plot(history[val_key], label=f'Validation {metric_name.upper()}', color='orangered', marker='x')
-    plt.title(f'Training and Validation {metric_name.upper()} Curve', fontsize=16)
-    plt.xlabel('Epoch', fontsize=12)
-    plt.ylabel(metric_name.upper(), fontsize=12)
-    plt.legend(fontsize=10)
-    plt.grid(True, linestyle='--', linewidth=0.5)
-    plt.tight_layout()
-    Path(save_path).parent.mkdir(parents=True, exist_ok=True)
-    plt.savefig(save_path, dpi=300)
-    plt.close()
-    print(f"✅ {metric_name.upper()} curve saved: {save_path}")
 
 def plot_confusion_matrix(cm, target_names, title='Confusion matrix', cmap=None, normalize=True):
     """
     This function prints and plots the confusion matrix.
     Normalization can be applied by setting `normalize=True`.
     """
-    if cmap is None:
-        cmap = plt.get_cmap('Blues')
+    accuracy = np.trace(cm) / float(np.sum(cm))
+    misclass = 1 - accuracy
 
-    plt.figure(figsize=(12, 10))
+    if cmap is None:
+        cmap = plt.get_cmap('viridis')
+
+    plt.figure(figsize=(14, 12)) 
     plt.imshow(cm, interpolation='nearest', cmap=cmap)
-    plt.title(title)
+    plt.title(title, fontsize=16)
     plt.colorbar()
 
     if target_names is not None:
         tick_marks = np.arange(len(target_names))
-        plt.xticks(tick_marks, target_names, rotation=90)
-        plt.yticks(tick_marks, target_names)
+        plt.xticks(tick_marks, target_names, rotation=90, fontsize=9)
+        plt.yticks(tick_marks, target_names, fontsize=9)
 
     if normalize:
         row_sums = cm.sum(axis=1)[:, np.newaxis]
-        cm = np.divide(cm.astype('float'), row_sums, out=np.zeros_like(cm, dtype=float), where=row_sums!=0)
+        cm_normalized = np.divide(cm.astype('float'), row_sums, 
+                                  out=np.zeros_like(cm, dtype=float), 
+                                  where=row_sums!=0)
 
-    thresh = cm.max() / 1.5 if normalize else cm.max() / 2
+    thresh = cm_normalized.max() / 2. if normalize else cm.max() / 2.
     for i, j in itertools.product(range(cm.shape[0]), range(cm.shape[1])):
         if normalize:
-            plt.text(j, i, "{:0.2f}".format(cm[i, j]),
+            plt.text(j, i, f"{cm_normalized[i, j]:.2f}",
                      horizontalalignment="center",
-                     color="white" if cm[i, j] > thresh else "black")
+                     color="white" if cm_normalized[i, j] > thresh else "black",
+                     fontsize=7) 
         else:
-            plt.text(j, i, "{:,}".format(cm[i, j]),
+            plt.text(j, i, f"{cm[i, j]:,}",
                      horizontalalignment="center",
-                     color="white" if cm[i, j] > thresh else "black")
+                     color="white" if cm[i, j] > thresh else "black",
+                     fontsize=7)
 
     plt.tight_layout()
-    plt.ylabel('True label')
-    plt.xlabel('Predicted label')
+    plt.ylabel('True Label', fontsize=12)
+    plt.xlabel(f'Predicted Label\naccuracy={accuracy:0.4f}; misclass={misclass:0.4f}', fontsize=12)

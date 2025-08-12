@@ -23,7 +23,6 @@
     │   ├── base_model.py   # Tüm modellerin miras alacağı ortak temel sınıf
     │   ├── tabcnn.py
     │   ├── fretnet.py
-    │   ├── crnn.py
     │   └── transformer.py
     │
     └── utils/              # Yardımcı ve yeniden kullanılabilir fonksiyonlar
@@ -31,5 +30,8 @@
 		├── callbacks.py 
         ├── experiment.py   # Otomatik deney klasörü oluşturma
         ├── losses.py       # Özel kayıp fonksiyonları
-        ├── metrics.py      # Değerlendirme metrikleri
+        ├── metrics.py
+		├── analyze_errors.py		
+		├── guitar_profile.py
+		├── agt_tools.py		
         └── plotting.py     # Sonuçları görselleştirme

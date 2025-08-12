@@ -1,109 +1,103 @@
+# ------------------ General Project Information ------------------
 project_name: "Automatic_Guitar_Transcription"
-experiment_name: "FretNet_SynthTab_Pretraining"
-dataset: "SynthTab"
+experiment_name: "FretNet_GuitarSet_MultiTask_SoftmaxFocal"
 
+# ------------------ Dataset and Feature Definitions ------------------
+dataset: "GuitarSet"
 dataset_configs:
   GuitarSet:
     drive_data_path: "/content/drive/MyDrive/Automatic Guitar Transcription/feature_extraction/guitarset_all_npz/"
     local_data_path: "/content/local_guitarset_data/"
-    active_feature: "hcqt"
-    features:
-      cqt:
-        key: "cqt"
-        in_channels: 1
-        num_freq: 144
-      hcqt:
-        key: "hcqt"
-        in_channels: 6
-        num_freq: 144
-      mel:
-        key: "mel"
-        in_channels: 1
-        num_freq: 256
   SynthTab:
     drive_data_path: "/content/drive/MyDrive/Automatic Guitar Transcription/feature_extraction/synthtab_all_npz/most_active_frames/"
     local_data_path: "/content/local_synthtab_data/"
-    active_feature: "hcqt"
-    features:
-      cqt:
-        key: "cqt"
-        in_channels: 1
-        num_freq: 144
-      hcqt:
-        key: "hcqt"
-        in_channels: 6
-        num_freq: 144
-      melspec:
-        key: "melspec"
-        in_channels: 1
-        num_freq: 256
 
+feature_definitions:
+  cqt: {key: "cqt", in_channels: 1, num_freq: 144}
+  hcqt: {key: "hcqt", in_channels: 6, num_freq: 144}
+  melspec: {key: "melspec", in_channels: 1, num_freq: 256}
+
+# ------------------ Data Loading and Processing Parameters ------------------
 data:
-  window_size: 200
-  sample_rate: 22050
-  hop_length: 512
-  batch_size: 30
-  validation_split_size: 0.1
-  random_state: 42
+  active_preparation_mode: "windowing" 
+  
+  configurations:
+    windowing:
+      window_size: 200 
+    framify:
+      framify_window_size: 9 
+  
+  active_feature: "hcqt"
+  batch_size: 16 
   num_workers: 2
-  max_fret: 19
-  silence_class: 20
-  include_silence: True
+  validation_split_size: 0.2
+  random_state: 42
 
+# ------------------ Model Selection and Parameters ------------------
 model:
   name: "FretNet"
   params:
-    num_strings: 6
-    num_classes: 21
-    rnn_type: "LSTM"
     rnn_hidden_size: 128
     rnn_num_layers: 2
-    rnn_bidirectional: True
-    rnn_dropout: 0.25
+    predict_onsets: False # onset denenecek data_loader onsetleride çekecek.
 
+# ------------------ Instrument Properties (for Metrics) ------------------
+instrument:
+  tuning: [40, 45, 50, 55, 59, 64]
+  min_midi: 40
+  max_midi: 88
+  num_frets: 19
+  num_strings: 6
+
+# ------------------ Loss Function Settings ------------------
 loss:
-  use_class_weights: True
-  class_weights_silence_factor: 0.25
-  use_focal: True
-  focal_loss_gamma: 2.0
+  active_loss: "softmax_groups"
+  
+  configurations:
+    softmax_groups:
+      use_focal: true
+      focal_loss_gamma: 2.0
+      use_class_weights: true
+      class_weights_silence_factor: 1.0
+      
+    logistic_bank:
+      use_focal: true
+      lmbda: 1.0 # (inhibition) 
+      focal_loss_gamma: 2.0
+      focal_alpha: 0.25
+      use_class_weights: true
+      class_weights_silence_factor: 1.0
 
+# ------------------ Training Parameters ------------------
 training:
   optimizer:
     active_optimizer: "Adam"
     configurations:
-      Adam:
-        params:
-          lr: 0.0005
-      AdamW:
-        params:
-          lr: 0.0005
-          weight_decay: 0.01
+      Adam: {params: {lr: 0.0005}}
+      AdamW: {params: {lr: 0.0005, weight_decay: 0.01}}
+          
+  scheduler:
+    active_scheduler: "ReduceLROnPlateau"
+    configurations:
+      ReduceLROnPlateau: {params: {monitor: "val_tab_f1", mode: "max", factor: 0.2, patience: 5, min_lr: 0.000001}}
+      StepLR: {params: {step_size: 10, gamma: 0.5}}
+          
   epochs: 100
   device: "cuda"
-  use_mixed_precision: True
+  use_mixed_precision: true
+  
   early_stopping:
-    enabled: True
-    monitor: "val_f1"
+    enabled: true
+    monitor: "val_tab_f1"
     patience: 10
     min_delta: 0.0001
     mode: "max"
-  logging_and_checkpointing:
-    use_tensorboard: True
-    resume_from_checkpoint: null
-    save_epoch_checkpoint_interval: 20
-  scheduler:
-    active_scheduler: "StepLR"
-    configurations:
-      ReduceLROnPlateau:
-        params:
-          monitor: "val_f1"
-          mode: "max"
-          factor: 0.2
-          patience: 5
-          verbose: True
-          min_lr: 0.000001
-      StepLR:
-        params:
-          step_size: 10
-          gamma: 0.5
-          verbose: True
+
+# ------------------ Evaluation Metrics Settings ------------------
+metrics:
+  include_silence: True
+
+# ------------------ Logging and Checkpoint Settings ------------------
+logging_and_checkpointing:
+  use_tensorboard: True
+  resume_from_checkpoint: null

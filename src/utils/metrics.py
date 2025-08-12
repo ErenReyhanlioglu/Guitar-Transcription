@@ -1,107 +1,160 @@
-"""
-Purpose:
-    This module is a collection of functions used to evaluate the performance
-    of the transcription models.
-
-Dependencies:
-    - torch
-    - sklearn.metrics
-
-Current Status:
-    - `accuracy`: Computes overall frame-wise accuracy.
-    - `compute_tablature_metrics`: Computes macro-averaged Precision, Recall, and F1-score.
-    - `stringwise_classification_report`: Generates a detailed report of metrics for each
-      of the 6 strings individually.
-
-Future Plans:
-    - [ ] Implement more advanced transcription-specific metrics, such as onset-aware
-          F1-scores or multi-pitch evaluation metrics.
-    - [ ] Add metrics that allow for a tolerance of +/- 1 fret.
-"""
-
 import torch
 import numpy as np
 from sklearn.metrics import precision_score, recall_score, f1_score
 from collections import Counter
+from tqdm import tqdm
+
+from .agt_tools import tablature_to_stacked_multi_pitch, stacked_multi_pitch_to_multi_pitch
 
 def finalize_output(logits, silence_class, return_shape="targets", mask_silence=False):
     preds = logits.argmax(dim=-1)
+    
     if mask_silence:
         preds[preds == silence_class] = -1
+        
     if return_shape == "targets":
-        preds = preds.permute(0, 2, 1)
+        preds = preds.permute(0, 2, 1) # (B, T, S) -> (B, S, T)
+        
     return preds
 
 def accuracy(logits, targets, include_silence, silence_class):
-    preds = finalize_output(logits, return_shape="logits", mask_silence=not include_silence, silence_class=silence_class)
-    targets = targets.permute(0, 2, 1)
+    preds = finalize_output(logits, silence_class, return_shape="logits", mask_silence=not include_silence)
 
     if not include_silence:
         mask = (targets != -1)
         if mask.sum() == 0:
-            return torch.tensor(1.0)
+            return torch.tensor(1.0) 
         correct = (preds == targets) & mask
         return correct.sum().float() / mask.sum().float()
     else:
         correct = (preds == targets)
         return correct.sum().float() / targets.numel()
 
-def compute_tablature_metrics(logits, targets, include_silence, silence_class):
-    preds = finalize_output(logits, return_shape="logits", mask_silence=not include_silence, silence_class=silence_class)
-    targets = targets.permute(0, 2, 1)
-
+def compute_tablature_metrics(preds, targets, include_silence):
+    preds_np = preds.cpu().numpy()
+    targets_np = targets.cpu().numpy()
+    results = {}
+    preds_flat = preds_np.flatten()
+    targets_flat = targets_np.flatten()
+    
     if not include_silence:
-        mask = (targets != -1)
-        if mask.sum() == 0:
-            return 1.0, 1.0, 1.0
-        preds_flat = preds[mask].cpu().numpy()
-        targets_flat = targets[mask].cpu().numpy()
-    else:
-        preds_flat = preds.cpu().numpy().flatten()
-        targets_flat = targets.cpu().numpy().flatten()
+        mask = (targets_flat != -1)
+        if mask.sum() == 0: 
+             results['overall_f1'] = 1.0
+             results['overall_precision'] = 1.0
+             results['overall_recall'] = 1.0
+        else:
+            preds_flat = preds_flat[mask]
+            targets_flat = targets_flat[mask]
+    
+    if len(targets_flat) > 0:
+        p = precision_score(targets_flat, preds_flat, average='macro', zero_division=0)
+        r = recall_score(targets_flat, preds_flat, average='macro', zero_division=0)
+        f1 = f1_score(targets_flat, preds_flat, average='macro', zero_division=0)
+        results['overall_f1'] = f1
+        results['overall_precision'] = p
+        results['overall_recall'] = r
 
-    precision = precision_score(targets_flat, preds_flat, average='macro', zero_division=0)
-    recall = recall_score(targets_flat, preds_flat, average='macro', zero_division=0)
-    f1 = f1_score(targets_flat, preds_flat, average='macro', zero_division=0)
+    per_string_metrics = {}
+    if targets_np.ndim > 1: 
+        num_strings = targets_np.shape[1] 
+        for s in range(num_strings):
+            preds_s = preds_np[:, s].flatten()
+            targets_s = targets_np[:, s].flatten()
 
-    return precision, recall, f1
+            if not include_silence:
+                mask_s = (targets_s != -1)
+                if mask_s.sum() == 0:
+                    continue 
+                preds_s = preds_s[mask_s]
+                targets_s = targets_s[mask_s]
+            
+            if len(targets_s) > 0:
+                f1_s = f1_score(targets_s, preds_s, average='macro', zero_division=0)
+                per_string_metrics[f'string_{s}_f1'] = f1_s
+    
+    results['per_string'] = per_string_metrics
+    
+    return results
+
+def compute_multipitch_metrics(preds_tab, targets, profile):
+    preds_tab_transposed = torch.from_numpy(preds_tab.cpu().numpy().T)
+    targets_transposed = torch.from_numpy(targets.cpu().numpy().T)
+
+    preds_smp = tablature_to_stacked_multi_pitch(preds_tab_transposed, profile)
+    targets_smp = tablature_to_stacked_multi_pitch(targets_transposed, profile)
+    
+    preds_mp = stacked_multi_pitch_to_multi_pitch(preds_smp)
+    targets_mp = stacked_multi_pitch_to_multi_pitch(targets_smp)
+    
+    preds_flat = preds_mp.flatten()
+    targets_flat = targets_mp.flatten()
+    
+    p = precision_score(targets_flat, preds_flat, average='binary', zero_division=0)
+    r = recall_score(targets_flat, preds_flat, average='binary', zero_division=0)
+    f1 = f1_score(targets_flat, preds_flat, average='binary', zero_division=0)
+    
+    return {'multipitch_f1': f1, 'multipitch_precision': p, 'multipitch_recall': r}
+
+from collections import Counter
+import numpy as np
+import torch
+from tqdm import tqdm
 
 def compute_per_string_class_weights(
-    npz_path_list, num_strings, num_classes,
-    silence_class, silence_factor, include_silence
-):
+    npz_path_list: list[str], 
+    num_strings: int, 
+    num_classes: int,
+    silence_class: int, 
+    silence_factor: float
+) -> tuple[torch.Tensor, torch.Tensor]:
     string_counters = [Counter() for _ in range(num_strings)]
 
-    for path in npz_path_list:
-        data = np.load(path, allow_pickle=True)
-        if "tablature" not in data:
+    print("Calculating class weights from dataset...")
+    for path in tqdm(npz_path_list, desc="Analyzing files"):
+        try:
+            with np.load(path, allow_pickle=True) as data:
+                if "tablature" not in data:
+                    continue
+
+                tab = data["tablature"]
+                tab = np.where(tab == -1, silence_class, tab)
+
+                for s in range(num_strings):
+                    string_counters[s].update(tab[s].tolist())
+        except Exception as e:
+            print(f"Warning: Could not process file {path}. Error: {e}")
             continue
 
-        tab = data["tablature"]
-        tab = np.where(tab == -1, silence_class, tab)
+    final_weights = []
+    final_counts = []
 
-        for s in range(num_strings):
-            string_counters[s].update(tab[s].tolist())
-
-    weights = []
     for s in range(num_strings):
-        total_counts = string_counters[s]
-        class_weights = []
+        total_counts_for_string = string_counters[s]
+        
+        current_string_weights = []
+        current_string_counts = []
 
         for cls in range(num_classes):
-            count = total_counts.get(cls, 1)
-            w = 1.0 / np.log1p(count)
-            class_weights.append(w)
-
-        w_tensor = torch.tensor(class_weights, dtype=torch.float32)
-
-        if silence_class < len(w_tensor):
-            if include_silence:
-                w_tensor[silence_class] *= silence_factor
+            count = total_counts_for_string.get(cls, 0)
+            
+            if count == 0:
+                weight = 0.0
             else:
-                w_tensor[silence_class] = 0.0
+                weight = 1.0 / (np.log1p(count) + 1e-9)
+            
+            current_string_weights.append(weight)
+            current_string_counts.append(count)
 
-        w_tensor = w_tensor / w_tensor.sum() * num_classes
-        weights.append(w_tensor)
+        weights_tensor = torch.tensor(current_string_weights, dtype=torch.float32)
 
-    return weights
+        if silence_class < len(weights_tensor):
+            weights_tensor[silence_class] *= silence_factor
+
+        if weights_tensor.sum() > 0:
+            weights_tensor = (weights_tensor / weights_tensor.sum()) * num_classes
+        
+        final_weights.append(weights_tensor)
+        final_counts.append(torch.tensor(current_string_counts, dtype=torch.int32))
+        
+    return torch.stack(final_weights), torch.stack(final_counts)

@@ -1,41 +1,36 @@
 project_name: Automatic_Guitar_Transcription
 experiment_name: FretNet_GuitarSet_FineTuning
 dataset: GuitarSet
+feature_definitions:
+  cqt:
+    key: cqt
+    in_channels: 1
+    num_freq: 144
+  hcqt:
+    key: hcqt
+    in_channels: 6
+    num_freq: 144
+  melspec:
+    key: melspec
+    in_channels: 1
+    num_freq: 256
 dataset_configs:
   GuitarSet:
     drive_data_path: /content/drive/MyDrive/Automatic Guitar Transcription/feature_extraction/guitarset_all_npz/
     local_data_path: /content/local_guitarset_data/
     active_feature: hcqt
-    features:
-      cqt:
-        key: cqt
-        in_channels: 1
-        num_freq: 144
-      hcqt:
-        key: hcqt
-        in_channels: 6
-        num_freq: 144
-      mel:
-        key: mel
-        in_channels: 1
-        num_freq: 256
+    supported_features:
+    - cqt
+    - hcqt
+    - melspec
   SynthTab:
     drive_data_path: /content/drive/MyDrive/Automatic Guitar Transcription/feature_extraction/synthtab_all_npz/most_active_frames/
     local_data_path: /content/local_synthtab_data/
     active_feature: hcqt
-    features:
-      cqt:
-        key: cqt
-        in_channels: 1
-        num_freq: 144
-      hcqt:
-        key: hcqt
-        in_channels: 6
-        num_freq: 144
-      melspec:
-        key: melspec
-        in_channels: 1
-        num_freq: 256
+    supported_features:
+    - cqt
+    - hcqt
+    - melspec
 data:
   window_size: 200
   sample_rate: 22050
