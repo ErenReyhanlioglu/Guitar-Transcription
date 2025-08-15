@@ -1,12 +1,12 @@
 # ------------------ General Project Information ------------------
 project_name: "Automatic_Guitar_Transcription"
-experiment_name: "FretNet_GuitarSet_MultiTask_SoftmaxFocal"
+experiment_name: "FretNet_segments_500frames_rare_biased_perfect"
 
 # ------------------ Dataset and Feature Definitions ------------------
 dataset: "GuitarSet"
 dataset_configs:
   GuitarSet:
-    drive_data_path: "/content/drive/MyDrive/Automatic Guitar Transcription/feature_extraction/guitarset_all_npz/"
+    drive_data_path: "/content/drive/MyDrive/Automatic Guitar Transcription/feature_extraction/segments_500frames_most_active_perfect/"
     local_data_path: "/content/local_guitarset_data/"
   SynthTab:
     drive_data_path: "/content/drive/MyDrive/Automatic Guitar Transcription/feature_extraction/synthtab_all_npz/most_active_frames/"
@@ -56,9 +56,9 @@ loss:
   configurations:
     softmax_groups:
       use_focal: true
-      focal_loss_gamma: 2.0
+      focal_loss_gamma: 2.50
       use_class_weights: true
-      class_weights_silence_factor: 1.0
+      class_weights_silence_factor: 0.6
       
     logistic_bank:
       use_focal: true
@@ -73,7 +73,7 @@ training:
   optimizer:
     active_optimizer: "Adam"
     configurations:
-      Adam: {params: {lr: 0.0005}}
+      Adam: {params: {lr: 0.0005}} # 0.0001 denenecek
       AdamW: {params: {lr: 0.0005, weight_decay: 0.01}}
           
   scheduler:
@@ -92,6 +92,10 @@ training:
     patience: 10
     min_delta: 0.0001
     mode: "max"
+    
+# ------------------ Post-Processing Settings ------------------
+post_processing:
+  min_duration_frames: 3 
 
 # ------------------ Evaluation Metrics Settings ------------------
 metrics:

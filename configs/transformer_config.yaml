@@ -3,10 +3,10 @@ project_name: "Automatic_Guitar_Transcription"
 experiment_name: "Transformer_GuitarSet_Flexible"
 
 # ------------------ Dataset and Feature Definitions ------------------
-dataset: "SynthTab"
+dataset: "GuitarSet"
 dataset_configs:
   GuitarSet:
-    drive_data_path: "/content/drive/MyDrive/Automatic Guitar Transcription/feature_extraction/guitarset_all_npz/"
+    drive_data_path: "/content/drive/MyDrive/Automatic Guitar Transcription/feature_extraction/segments_500frames_rare_biased_perfect/"
     local_data_path: "/content/local_guitarset_data/"
   SynthTab:
     drive_data_path: "/content/drive/MyDrive/Automatic Guitar Transcription/feature_extraction/synthtab_all_npz/most_active_frames/"
@@ -23,7 +23,7 @@ data:
   
   configurations:
     windowing:
-      window_size: 500 
+      window_size: 200 
     framify:
       framify_window_size: 9
   
@@ -58,9 +58,9 @@ loss:
   configurations:
     softmax_groups:
       use_focal: true
-      focal_loss_gamma: 3.0
+      focal_loss_gamma: 2.25
       use_class_weights: true
-      class_weights_silence_factor: 0.5
+      class_weights_silence_factor: 0.8
       
     logistic_bank:
       use_focal: false
@@ -94,6 +94,10 @@ training:
     patience: 10
     min_delta: 0.0001
     mode: "max"
+
+# ------------------ Post-Processing Settings ------------------
+post_processing:
+  min_duration_frames: 3     
 
 # ------------------ Evaluation Metrics Settings ------------------
 metrics:

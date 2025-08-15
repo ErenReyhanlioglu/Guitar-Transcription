@@ -26,7 +26,6 @@ def plot_loss_curves(history: dict, save_path: str or Path):
         print("Warning: 'train_loss' or 'val_loss' not found in history. Skipping loss plot.")
     plt.close()
 
-# --- GÜNCELLENDİ: Daha esnek metrik çizdirme fonksiyonu ---
 def plot_metrics_custom(history: dict, val_metric_key: str, train_metric_key: str, plot_title: str, save_path: str or Path):
     """
     Plots and saves a specific training and validation metric curve from the history dictionary.

@@ -7,7 +7,7 @@ from torch.cuda.amp import autocast, GradScaler
 from tqdm import tqdm
 import torch.nn.functional as F
 
-from .utils.metrics import compute_tablature_metrics, compute_multipitch_metrics, finalize_output
+from .utils.metrics import compute_tablature_metrics, compute_multipitch_metrics, finalize_output, compute_octave_tolerant_metrics, apply_duration_threshold
 from .utils.losses import SoftmaxGroups, LogisticBankLoss
 from .utils.guitar_profile import GuitarProfile
 from .utils.experiment import save_model_summary, generate_experiment_report 
@@ -75,12 +75,19 @@ class Trainer:
 
     def _create_empty_history(self):
         return {
-            "train_loss": [], "val_loss": [], "train_tab_f1": [], "val_tab_f1": [],
-            "train_tab_precision": [], "val_tab_precision": [], "train_tab_recall": [], "val_tab_recall": [],
+            "train_loss": [], "val_loss": [],
+            "train_tab_f1": [], "val_tab_f1": [],
+            "train_tab_precision": [], "val_tab_precision": [],
+            "train_tab_recall": [], "val_tab_recall": [],
             "train_mp_f1": [], "val_mp_f1": [], 
             "train_mp_precision": [], "val_mp_precision": [], 
-            "train_mp_recall": [], "val_mp_recall": [],       
-            "lr": []
+            "train_mp_recall": [], "val_mp_recall": [],
+            "train_octave_f1": [], "val_octave_f1": [],
+            "train_octave_precision": [], "val_octave_precision": [],
+            "train_octave_recall": [], "val_octave_recall": [],
+            "lr": [],
+            "train_correctly_discarded_segments": [], "val_correctly_discarded_segments": [],
+            "train_accidentally_discarded_segments": [], "val_accidentally_discarded_segments": []
         }
     
     def _compute_loss(self, logits, targets, batch):
@@ -126,7 +133,7 @@ class Trainer:
             preds_reshaped = logits.reshape(B, T, -1)
 
             return self.loss_fn(preds_reshaped.reshape(-1, preds_reshaped.shape[-1]), 
-                                labels_logistic.reshape(-1, labels_logistic.shape[-1]))
+                                  labels_logistic.reshape(-1, labels_logistic.shape[-1]))
         
         return 0.0
 
@@ -155,28 +162,16 @@ class Trainer:
                     elif self.preparation_mode == 'framify':
                         framify_win_size = self.data_config.get('framify_window_size', 9)
                         pad_amount = framify_win_size // 2
-                        
                         inputs_padded = F.pad(inputs, (pad_amount, pad_amount), 'constant', 0)
-                        
-                        unfolded = inputs_padded.unfold(3, framify_win_size, 1) # (B, C, F, T_new, W)
-                        unfolded = unfolded.permute(0, 3, 1, 2, 4) # (B, T, C, F, W)
+                        unfolded = inputs_padded.unfold(3, framify_win_size, 1).permute(0, 3, 1, 2, 4)
                         B, T, C, n_freqs, W = unfolded.shape
-                        
                         input_frames = unfolded.reshape(B * T, C, n_freqs, W)
-                        target_frames = targets_full.permute(0, 2, 1).reshape(B * T, self.model.num_strings)
-
-                        logits_flat = self.model(input_frames) # Model (B*T, S*C) veya (B*T, S*(C-1)) döndürür
-                        
-                        # Çıktıyı (B, T, S, C_out) formatına getirerek kayıp fonksiyonuyla uyumlu hale getir
-                        # Not: C_out, silence sınıfı içerip içermemesine göre değişir
+                        logits_flat = self.model(input_frames)
                         if self.loss_config['type'] == 'logistic_bank':
                             num_output_classes = self.model.num_classes - 1
                         else:
                             num_output_classes = self.model.num_classes
-                            
-                        logits = logits_flat.reshape(B, T, self.model.num_strings, num_output_classes)
-                        
-                        # Kayıp fonksiyonuna hedefleri (B, T, S) formatında ver
+                        logits = logits_flat.view(B, T, self.model.num_strings, num_output_classes)
                         loss = self._compute_loss(logits, targets_full.permute(0, 2, 1), batch)
 
                     else:
@@ -192,14 +187,13 @@ class Trainer:
                 if isinstance(logits, dict): 
                     logits = logits['tablature']
 
-                # Logit'leri ve hedefleri (B, T, S, C) ve (B, T, S) formatında tutarlılık için yeniden şekillendir
                 B, T, S, C_out = logits.shape
                 all_logits_list.append(logits.reshape(-1, S, C_out).cpu().detach())
                 all_targets_list.append(targets_full.permute(0, 2, 1).reshape(-1, S).cpu().detach())
 
 
         if not all_logits_list:
-            return {'loss': 0, 'tab_f1': 0, 'tab_precision': 0, 'tab_recall': 0, 'mp_f1': 0, 'mp_precision': 0, 'mp_recall': 0}
+            return {k.replace('train_', ''): 0 for k in self._create_empty_history().keys() if k.startswith('train_')}
 
         all_logits = torch.cat(all_logits_list, dim=0)
         all_targets = torch.cat(all_targets_list, dim=0)
@@ -219,10 +213,10 @@ class Trainer:
             val_metrics = self._run_epoch(self.val_loader, is_training=False)
             
             val_metrics_prefixed = {f"val_{k}": v for k, v in val_metrics.items()}
-            train_metrics['train_loss'] = train_metrics.pop('loss')
+            train_metrics_prefixed = {f"train_{k}": v for k, v in train_metrics.items()}
 
-            self._update_history(train_metrics, val_metrics_prefixed)
-            self._log_epoch(epoch, train_metrics, val_metrics_prefixed)
+            self._update_history(train_metrics_prefixed, val_metrics_prefixed)
+            self._log_epoch(epoch, train_metrics_prefixed, val_metrics_prefixed)
             
             if self.scheduler:
                 if isinstance(self.scheduler, ReduceLROnPlateau):
@@ -245,75 +239,124 @@ class Trainer:
         self._finalize_training()
         return self.model, self.history
     
+
     def _calculate_metrics(self, logits, targets):
         silence_class = self.data_config['silence_class']
         
         if self.loss_config['type'] == 'logistic_bank':
-            preds_tab = logistic_to_tablature(
+            preds_tab_raw = logistic_to_tablature(
                 torch.sigmoid(logits).cpu(), self.guitar_profile, silence=False
             )
-        else:
-            preds_tab = finalize_output(
+        else: 
+            preds_tab_raw = finalize_output(
                 logits,
                 silence_class=silence_class,
                 return_shape="logits", 
-                mask_silence=not self.config['metrics']['include_silence']
+                mask_silence=False
             )
 
+        post_processing_config = self.config.get('post_processing', {})
+        min_duration = post_processing_config.get('min_duration_frames', 0)
+
+        threshold_stats = {
+            'correctly_discarded_segments': 0,
+            'accidentally_discarded_segments': 0
+        }
+
+        if min_duration > 0:
+            preds_tab_processed, threshold_stats = apply_duration_threshold(
+                preds_tab=preds_tab_raw,
+                targets=targets,  
+                min_duration_frames=min_duration,
+                silence_class=silence_class
+            )
+        else:
+            preds_tab_processed = preds_tab_raw
+        
         tab_metrics = compute_tablature_metrics(
-            preds_tab, 
-            targets,
+            preds_tab_processed, 
+            targets, 
             self.config['metrics']['include_silence']
         )
-        
         mp_metrics = compute_multipitch_metrics(
-            preds_tab, 
+            preds_tab_processed, 
             targets, 
             self.guitar_profile
         )
-        
-        return {
+        tuning = self.config['instrument']['tuning']
+        octave_metrics = compute_octave_tolerant_metrics(
+            preds_tab_processed, 
+            targets, 
+            tuning, 
+            silence_class
+        )
+
+        final_metrics = {
             'tab_f1': tab_metrics['overall_f1'],
             'tab_precision': tab_metrics['overall_precision'],
             'tab_recall': tab_metrics['overall_recall'],
             'mp_f1': mp_metrics['multipitch_f1'],
             'mp_precision': mp_metrics['multipitch_precision'],
-            'mp_recall': mp_metrics['multipitch_recall']
+            'mp_recall': mp_metrics['multipitch_recall'],
+            'octave_f1': octave_metrics['octave_f1'],
+            'octave_precision': octave_metrics['octave_precision'],
+            'octave_recall': octave_metrics['octave_recall']
         }
+        
+        final_metrics.update(threshold_stats)
+        
+        return final_metrics
       
     def _update_history(self, train_metrics, val_metrics):
-        self.history["train_loss"].append(train_metrics['train_loss'])
-        self.history["val_loss"].append(val_metrics['val_loss'])
-        self.history["train_tab_f1"].append(train_metrics['tab_f1'])
-        self.history["val_tab_f1"].append(val_metrics['val_tab_f1'])
-        self.history["train_tab_precision"].append(train_metrics['tab_precision'])
-        self.history["val_tab_precision"].append(val_metrics['val_tab_precision'])
-        self.history["train_tab_recall"].append(train_metrics['tab_recall'])
-        self.history["val_tab_recall"].append(val_metrics['val_tab_recall'])
-        self.history["train_mp_f1"].append(train_metrics['mp_f1'])
-        self.history["val_mp_f1"].append(val_metrics['val_mp_f1'])
-        self.history["train_mp_precision"].append(train_metrics['mp_precision'])
-        self.history["val_mp_precision"].append(val_metrics['val_mp_precision'])
-        self.history["train_mp_recall"].append(train_metrics['mp_recall'])
-        self.history["val_mp_recall"].append(val_metrics['val_mp_recall'])
-        self.history['lr'].append(self.optimizer.param_groups[0]['lr'])
+        for key in self.history.keys():
+            if key == 'lr':
+                self.history[key].append(self.optimizer.param_groups[0]['lr'])
+            else:
+                self.history[key].append(train_metrics.get(key, 0) if key.startswith('train') else val_metrics.get(key, 0))
 
     def _log_epoch(self, epoch, train_metrics, val_metrics):
-        epoch_log = (
-            f"Epoch {epoch+1:02d}/{self.training_config['epochs']} | "
-            f"Train Loss: {train_metrics['train_loss']:.4f}, Train Tab F1: {train_metrics['tab_f1']:.4f}, Train MP F1: {train_metrics['mp_f1']:.4f} | "
-            f"Val Loss: {val_metrics['val_loss']:.4f}, Val Tab F1: {val_metrics['val_tab_f1']:.4f}, "
-            f"Val MP F1: {val_metrics['val_mp_f1']:.4f}, Val MP P: {val_metrics['val_mp_precision']:.4f}, Val MP R: {val_metrics['val_mp_recall']:.4f} | "
-            f"LR: {self.optimizer.param_groups[0]['lr']:.6f}"
-        )
-        print(epoch_log)
+        print(f"\n--- Epoch {epoch+1:02d}/{self.training_config['epochs']} ---")
+        print(f"LR: {self.optimizer.param_groups[0]['lr']:.6f}")
+        print(f"Losses          | Train: {train_metrics['train_loss']:.4f}, Validation: {val_metrics['val_loss']:.4f}")
+        print("-" * 25)
+        print("Tab Metrics (Strict)")
+        print(f"  ├─ F1            | Train: {train_metrics['train_tab_f1']:.4f}, Validation: {val_metrics['val_tab_f1']:.4f}")
+        print(f"  ├─ Precision     | Train: {train_metrics['train_tab_precision']:.4f}, Validation: {val_metrics['val_tab_precision']:.4f}")
+        print(f"  └─ Recall        | Train: {train_metrics['train_tab_recall']:.4f}, Validation: {val_metrics['val_tab_recall']:.4f}")
+        print("Multi-pitch Metrics")
+        print(f"  ├─ F1            | Train: {train_metrics['train_mp_f1']:.4f}, Validation: {val_metrics['val_mp_f1']:.4f}")
+        print(f"  ├─ Precision     | Train: {train_metrics['train_mp_precision']:.4f}, Validation: {val_metrics['val_mp_precision']:.4f}")
+        print(f"  └─ Recall        | Train: {train_metrics['train_mp_recall']:.4f}, Validation: {val_metrics['val_mp_recall']:.4f}")
+        print("Octave Tolerant Metrics")
+        print(f"  ├─ F1            | Train: {train_metrics['train_octave_f1']:.4f}, Validation: {val_metrics['val_octave_f1']:.4f}")
+        print(f"  ├─ Precision     | Train: {train_metrics['train_octave_precision']:.4f}, Validation: {val_metrics['val_octave_precision']:.4f}")
+        print(f"  └─ Recall        | Train: {train_metrics['train_octave_recall']:.4f}, Validation: {val_metrics['val_octave_recall']:.4f}")
+        
+        if self.config.get('post_processing', {}).get('min_duration_frames', 0) > 0:
+            print("Post-Processing Stats (Segments Discarded)")
+            train_correctly = int(train_metrics.get('train_correctly_discarded_segments', 0))
+            val_correctly = int(val_metrics.get('val_correctly_discarded_segments', 0))
+            train_accidentally = int(train_metrics.get('train_accidentally_discarded_segments', 0))
+            val_accidentally = int(val_metrics.get('val_accidentally_discarded_segments', 0))
+            print(f"  ├─ Correctly (FP)  | Train: {train_correctly}, Validation: {val_correctly}")
+            print(f"  └─ Accidentally (TP)| Train: {train_accidentally}, Validation: {val_accidentally}")
+
+        print("-" * 50)
+        
         if self.writer:
             self.writer.add_scalars('Loss', {'train': train_metrics['train_loss'], 'validation': val_metrics['val_loss']}, epoch)
-            self.writer.add_scalars('Tablature_F1', {'train': train_metrics['tab_f1'], 'validation': val_metrics['val_tab_f1']}, epoch)
-            self.writer.add_scalars('Multi-pitch_F1', {'train': train_metrics['mp_f1'], 'validation': val_metrics['val_mp_f1']}, epoch)
-            self.writer.add_scalars('Multi-pitch_Precision', {'train': train_metrics['mp_precision'], 'validation': val_metrics['val_mp_precision']}, epoch)
-            self.writer.add_scalars('Multi-pitch_Recall', {'train': train_metrics['mp_recall'], 'validation': val_metrics['val_mp_recall']}, epoch)
+            self.writer.add_scalars('Tablature_F1', {'train': train_metrics['train_tab_f1'], 'validation': val_metrics['val_tab_f1']}, epoch)
+            self.writer.add_scalars('Multi-pitch_F1', {'train': train_metrics['train_mp_f1'], 'validation': val_metrics['val_mp_f1']}, epoch)
+            self.writer.add_scalars('Octave_Tolerant_F1', {'train': train_metrics['train_octave_f1'], 'validation': val_metrics['val_octave_f1']}, epoch)
             self.writer.add_scalar('Parameters/learning_rate', self.optimizer.param_groups[0]['lr'], epoch)
+            
+            if self.config.get('post_processing', {}).get('min_duration_frames', 0) > 0:
+                self.writer.add_scalars('PostProcessing/Correctly_Discarded', 
+                                        {'train': train_metrics.get('train_correctly_discarded_segments', 0), 
+                                        'validation': val_metrics.get('val_correctly_discarded_segments', 0)}, epoch)
+                self.writer.add_scalars('PostProcessing/Accidentally_Discarded', 
+                                        {'train': train_metrics.get('train_accidentally_discarded_segments', 0), 
+                                        'validation': val_metrics.get('val_accidentally_discarded_segments', 0)}, epoch)
             
     def _save_checkpoint(self, epoch, best_val_metric, is_best):
         state = {

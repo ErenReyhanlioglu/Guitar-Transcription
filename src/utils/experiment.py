@@ -31,7 +31,7 @@ def create_experiment_directory(base_output_path: str, model_name: str, config: 
         print(f"Fine-tuning run detected. Pre-trained model path: {pretrained_path}")
         pretrain_exp_path = Path(pretrained_path).resolve().parent
         if pretrain_exp_path.name.endswith("checkpoints"):
-             pretrain_exp_path = pretrain_exp.parent
+              pretrain_exp_path = pretrain_exp_path.parent 
         base_path_for_versioning = os.path.join(pretrain_exp_path, "finetune")
     else:
         base_path_for_versioning = os.path.join(base_output_path, model_name)
@@ -102,17 +102,33 @@ def generate_experiment_report(model: torch.nn.Module, history: dict, val_loader
     print("="*50)
 
     charts_path = os.path.join(experiment_path, "charts")
+    tab_path = os.path.join(charts_path, "tablature")
+    mp_path = os.path.join(charts_path, "multi_pitch")
+    oct_path = os.path.join(charts_path, "octave_tolerated")
+    sample_path = os.path.join(charts_path, "sample_outputs")
+
     os.makedirs(charts_path, exist_ok=True)
+    os.makedirs(tab_path, exist_ok=True)
+    os.makedirs(mp_path, exist_ok=True)
+    os.makedirs(oct_path, exist_ok=True)
+    os.makedirs(sample_path, exist_ok=True)
     
     plot_loss_curves(history, os.path.join(charts_path, "loss_curve.png"))
-    plot_metrics_custom(history, 'val_tab_f1', 'train_tab_f1', 'Tablature F1 Score', os.path.join(charts_path, "tab_f1_curve.png"))
-    plot_metrics_custom(history, 'val_mp_f1', 'train_mp_f1', 'Multi-pitch F1 Score', os.path.join(charts_path, "mp_f1_curve.png"))
-    plot_metrics_custom(history, 'val_tab_precision', 'train_tab_precision', 'Tablature Precision', os.path.join(charts_path, "tab_precision_curve.png"))
-    plot_metrics_custom(history, 'val_tab_recall', 'train_tab_recall', 'Tablature Recall', os.path.join(charts_path, "tab_recall_curve.png"))
-    plot_metrics_custom(history, 'val_mp_precision', 'train_mp_precision', 'Multi-pitch Precision', os.path.join(charts_path, "mp_precision_curve.png"))
-    plot_metrics_custom(history, 'val_mp_recall', 'train_mp_recall', 'Multi-pitch Recall', os.path.join(charts_path, "mp_recall_curve.png"))
     
-    print("History plots saved.")
+    plot_metrics_custom(history, 'val_tab_f1', 'train_tab_f1', 'Tablature F1 Score', os.path.join(tab_path, "tab_f1_curve.png"))
+    plot_metrics_custom(history, 'val_tab_precision', 'train_tab_precision', 'Tablature Precision', os.path.join(tab_path, "tab_precision_curve.png"))
+    plot_metrics_custom(history, 'val_tab_recall', 'train_tab_recall', 'Tablature Recall', os.path.join(tab_path, "tab_recall_curve.png"))
+
+    plot_metrics_custom(history, 'val_mp_f1', 'train_mp_f1', 'Multi-pitch F1 Score', os.path.join(mp_path, "mp_f1_curve.png"))
+    plot_metrics_custom(history, 'val_mp_precision', 'train_mp_precision', 'Multi-pitch Precision', os.path.join(mp_path, "mp_precision_curve.png"))
+    plot_metrics_custom(history, 'val_mp_recall', 'train_mp_recall', 'Multi-pitch Recall', os.path.join(mp_path, "mp_recall_curve.png"))
+    
+    if 'val_octave_f1' in history:
+        plot_metrics_custom(history, 'val_octave_f1', 'train_octave_f1', 'Octave Tolerant F1 Score', os.path.join(oct_path, "octave_f1_curve.png"))
+        plot_metrics_custom(history, 'val_octave_precision', 'train_octave_precision', 'Octave Tolerant Precision', os.path.join(oct_path, "octave_precision_curve.png"))
+        plot_metrics_custom(history, 'val_octave_recall', 'train_octave_recall', 'Octave Tolerant Recall', os.path.join(oct_path, "octave_recall_curve.png"))
+
+    print("History plots saved into organized folders.")
 
     print("Sampling a batch for visual comparison...")
     try:
@@ -132,23 +148,16 @@ def generate_experiment_report(model: torch.nn.Module, history: dict, val_loader
         if preparation_mode == 'framify':
             framify_win_size = config['data'].get('framify_window_size', 9)
             pad_amount = framify_win_size // 2
-            
             inputs_padded = F.pad(features, (pad_amount, pad_amount), 'constant', 0)
-            
             unfolded = inputs_padded.unfold(3, framify_win_size, 1).permute(0, 3, 1, 2, 4)
-            
             B, T, C, n_freqs, W = unfolded.shape
             inputs = unfolded.reshape(B * T, C, n_freqs, W)
-            
             logits_flat = model(inputs)
-            
             if config['loss']['type'] == 'logistic_bank':
                 num_output_classes = config['data']['num_classes'] - 1
             else:
                 num_output_classes = config['data']['num_classes']
-            
             logits = logits_flat.reshape(B, T, config['instrument']['num_strings'], num_output_classes)
-        
         else: 
             inputs = features
             logits = model(inputs)
@@ -156,7 +165,6 @@ def generate_experiment_report(model: torch.nn.Module, history: dict, val_loader
         if isinstance(logits, dict):
             logits = logits['tablature']
         
-        # Output'u finalize etme
         if config['loss']['type'] == 'logistic_bank':
             pred_tab_tensor = logistic_to_tablature(
                 torch.sigmoid(logits).cpu(), profile, silence=False
@@ -166,15 +174,14 @@ def generate_experiment_report(model: torch.nn.Module, history: dict, val_loader
                 logits.cpu(),
                 silence_class=config['data']['silence_class'],
                 return_shape="logits", 
-                mask_silence=True
+                mask_silence=False 
             )
 
     if preparation_mode == 'framify':
-        # framify için features'ı (B, C, F, T) şeklinden (C, F, T) şekline getiriyoruz
         unfolded_np = unfolded.cpu().numpy()
-        feature_np = np.transpose(unfolded_np[0], (1, 2, 0, 3)) # (T, C, F, W) -> (C, F, W, T)
+        feature_np = np.transpose(unfolded_np[0], (1, 2, 0, 3))
         center_frame_idx = feature_np.shape[2] // 2
-        feature_np = feature_np[:, :, center_frame_idx, :] # (C, F, T)
+        feature_np = feature_np[:, :, center_frame_idx, :]
     else:
         feature_np = features[0].cpu().numpy()
 
@@ -188,9 +195,9 @@ def generate_experiment_report(model: torch.nn.Module, history: dict, val_loader
     sample_rate = config['data'].get('sample_rate', 22050)
     hop_seconds = hop_length / sample_rate
 
-    plot_spectrogram(feature_np, hop_seconds, os.path.join(charts_path, "sample_spectrogram.png"))
-    plot_guitar_tablature(gt_tab_np, hop_seconds, os.path.join(charts_path, "sample_tablature_ground_truth.png"), title="Ground Truth Tablature")
-    plot_guitar_tablature(pred_tab_np, hop_seconds, os.path.join(charts_path, "sample_tablature_prediction.png"), title="Predicted Tablature")
+    plot_spectrogram(feature_np, hop_seconds, os.path.join(sample_path, "sample_spectrogram.png"))
+    plot_guitar_tablature(gt_tab_np, hop_seconds, os.path.join(sample_path, "sample_tablature_ground_truth.png"), title="Ground Truth Tablature")
+    plot_guitar_tablature(pred_tab_np, hop_seconds, os.path.join(sample_path, "sample_tablature_prediction.png"), title="Predicted Tablature")
 
     gt_smp = tablature_to_stacked_multi_pitch(torch.from_numpy(gt_tab_np).unsqueeze(0), profile)
     gt_pianoroll = stacked_multi_pitch_to_multi_pitch(gt_smp).squeeze(0).numpy()
@@ -198,8 +205,8 @@ def generate_experiment_report(model: torch.nn.Module, history: dict, val_loader
     pred_smp = tablature_to_stacked_multi_pitch(torch.from_numpy(pred_tab_np).unsqueeze(0), profile)
     pred_pianoroll = stacked_multi_pitch_to_multi_pitch(pred_smp).squeeze(0).numpy()
 
-    plot_pianoroll(gt_pianoroll, hop_seconds, os.path.join(charts_path, "sample_pianoroll_ground_truth.png"), title="Ground Truth (Pianoroll View)")
-    plot_pianoroll(pred_pianoroll, hop_seconds, os.path.join(charts_path, "sample_pianoroll_prediction.png"), title="Prediction (Pianoroll View)")
+    plot_pianoroll(gt_pianoroll, hop_seconds, os.path.join(sample_path, "sample_pianoroll_ground_truth.png"), title="Ground Truth (Pianoroll View)")
+    plot_pianoroll(pred_pianoroll, hop_seconds, os.path.join(sample_path, "sample_pianoroll_prediction.png"), title="Prediction (Pianoroll View)")
 
     print("="*50)
     print("Experiment report generation complete.")

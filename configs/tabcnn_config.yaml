@@ -3,10 +3,10 @@ project_name: "Automatic_Guitar_Transcription"
 experiment_name: "TabCNN_GuitarSet_Framified_SoftmaxFocal"
 
 # ------------------ Dataset and Feature Definitions ------------------
-dataset: "SynthTab"
+dataset: "GuitarSet"
 dataset_configs:
   GuitarSet:
-    drive_data_path: "/content/drive/MyDrive/Automatic Guitar Transcription/feature_extraction/guitarset_all_npz/"
+    drive_data_path: "/content/drive/MyDrive/Automatic Guitar Transcription/feature_extraction/segments_500frames_most_active_perfect/"
     local_data_path: "/content/local_guitarset_data/"
   SynthTab:
     drive_data_path: "/content/drive/MyDrive/Automatic Guitar Transcription/feature_extraction/synthtab_all_npz/most_active_frames/"
@@ -53,10 +53,10 @@ loss:
   
   configurations:
     softmax_groups:
-      use_focal: false
-      focal_loss_gamma: 3.0
+      use_focal: True
+      focal_loss_gamma: 2.75 
       use_class_weights: true
-      class_weights_silence_factor: 0.5
+      class_weights_silence_factor: 0.75
       
     logistic_bank:
       use_focal: true
@@ -71,7 +71,7 @@ training:
   optimizer:
     active_optimizer: "Adam"
     configurations:
-      Adam: {params: {lr: 0.0005}}
+      Adam: {params: {lr: 0.0001}}
       AdamW: {params: {lr: 0.0005, weight_decay: 0.01}}
           
   scheduler:
@@ -90,6 +90,10 @@ training:
     patience: 10
     min_delta: 0.0001
     mode: "max"
+
+# ------------------ Post-Processing Settings ------------------
+post_processing:
+  min_duration_frames: 3 
 
 # ------------------ Evaluation Metrics Settings ------------------
 metrics:
