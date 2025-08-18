@@ -8,33 +8,35 @@ from .tabcnn import TabCNN
 from .fretnet import FretNet
 from .transformer import Transformer
 
-# Model ismini sınıfla eşleştiren merkezi bir kayıt listesi
-MODEL_REGISTRY: dict[str, Type[nn.Module]] = {
+MODEL_REGISTRY: dict[str, Type[BaseTabModel]] = {
     "TabCNN": TabCNN,
     "FretNet": FretNet,
     "Transformer": Transformer,
 }
 
-def get_model(config: dict) -> nn.Module:
+def get_model(config: dict) -> BaseTabModel:
     """
     Acts as a factory to instantiate a model based on the configuration.
 
-    This function reads the model name and parameters from the config,
-    finds the corresponding model class in the registry, and initializes it,
-    passing the full config object to the model's constructor.
-
-    Args:
-        config (dict): The complete experiment configuration dictionary.
-
-    Returns:
-        nn.Module: The initialized PyTorch model.
+    This function reads all necessary parameters from the config and 
+    initializes the correct model class.
     """
     model_name = config['model']['name']
-    model_params = config['model']['params']
-    
     if model_name not in MODEL_REGISTRY:
         raise ValueError(f"Model '{model_name}' is not registered in MODEL_REGISTRY.")
 
+    active_feature_name = config['data']['active_feature']
+    feature_def = config['feature_definitions'][active_feature_name]
+    
+    init_params = {
+        "in_channels": feature_def['in_channels'],
+        "num_freq": feature_def['num_freq'],
+        "num_strings": config['instrument']['num_strings'],
+        "num_classes": config['data']['num_classes'],
+        "config": config,
+        **config['model']['params'] 
+    }
+
     model_class = MODEL_REGISTRY[model_name]
     
-    return model_class(config=config, **model_params)
+    return model_class(**init_params)

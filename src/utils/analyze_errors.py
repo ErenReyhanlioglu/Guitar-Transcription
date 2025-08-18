@@ -95,7 +95,7 @@ def analyze(experiment_path: str, val_loader: DataLoader = None):
                 input_frames = unfolded.reshape(B * T, C, n_freqs, W)
                 logits_flat = model(input_frames)
 
-                if config['loss']['type'] == 'logistic_bank':
+                if config['loss']['active_loss'] == 'logistic_bank':
                     num_output_classes = num_classes - 1
                 else:
                     num_output_classes = num_classes
@@ -107,7 +107,7 @@ def analyze(experiment_path: str, val_loader: DataLoader = None):
             if isinstance(logits, dict):
                 logits = logits['tablature']
             
-            if config['loss']['type'] == 'logistic_bank':
+            if config['loss']['active_loss'] == 'logistic_bank':
                 preds = logistic_to_tablature(
                     torch.sigmoid(logits).cpu(), profile, silence=False
                 ).permute(0, 2, 1)

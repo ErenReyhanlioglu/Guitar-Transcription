@@ -1,10 +1,13 @@
 import torch
 import torch.nn as nn
 import math
+import logging
 from .base_model import BaseTabModel
+from src.utils.logger import describe
+
+logger = logging.getLogger(__name__)
 
 class PositionalEncoding(nn.Module):
-    # Bu sınıf aynı kalacak, değişiklik yok.
     def __init__(self, d_model: int, dropout: float = 0.1, max_len: int = 5000):
         super(PositionalEncoding, self).__init__()
         self.dropout = nn.Dropout(p=dropout)
@@ -24,40 +27,79 @@ class Transformer(BaseTabModel):
         super().__init__(num_strings, num_classes)
         
         self.config = config
-        self.output_mode = self.config['loss']['type']
+        self.model_params = self.config['model']['params']
+        self.active_loss = self.config['loss']['active_loss']
+        self.predict_onsets = self.model_params.get('predict_onsets', False)
         
-        if self.output_mode == 'softmax_groups':
-            self.total_output_size = self.num_strings * self.num_classes
-        elif self.output_mode == 'logistic_bank':
-            self.total_output_size = self.num_strings * (self.num_classes - 1)
-        else:
-            raise ValueError(f"Unsupported output_mode: {self.output_mode}")
+        logger.info("Initializing Transformer model...")
+        logger.info(f"  -> Active loss function for output shaping: '{self.active_loss}'")
+        logger.info(f"  -> Onset prediction enabled: {self.predict_onsets}")
 
-        d_model = kwargs.get('d_model', 256)
-        n_head = kwargs.get('n_head', 8)
-        num_encoder_layers = kwargs.get('num_encoder_layers', 6)
-        dim_feedforward = kwargs.get('dim_feedforward', 1024)
-        dropout = kwargs.get('dropout', 0.1)
+        if self.active_loss == 'softmax_groups':
+            self.tab_output_size = self.num_strings * self.num_classes
+        elif self.active_loss == 'logistic_bank':
+            self.tab_output_size = self.num_strings * (self.num_classes - 1)
+        else:
+            raise ValueError(f"Unsupported loss: {self.active_loss}")
+        
+        self.onset_output_size = self.num_strings * (self.num_classes - 1)
+
+        d_model = self.model_params.get('d_model', 256)
+        n_head = self.model_params.get('n_head', 8)
+        num_encoder_layers = self.model_params.get('num_encoder_layers', 6)
+        
+        logger.debug(f"Model params: d_model={d_model}, n_head={n_head}, num_encoder_layers={num_encoder_layers}")
+        logger.debug(f"Calculated tablature head output size: {self.tab_output_size}")
         
         self.d_model = d_model
         self.input_proj = nn.Linear(in_channels * num_freq, d_model)
-        self.pos_encoder = PositionalEncoding(d_model, dropout)
+        self.pos_encoder = PositionalEncoding(d_model, self.model_params.get('dropout', 0.1))
         
-        encoder_layer = nn.TransformerEncoderLayer(d_model, n_head, dim_feedforward, dropout, batch_first=True)
+        encoder_layer = nn.TransformerEncoderLayer(
+            d_model, n_head, self.model_params.get('dim_feedforward', 1024), 
+            self.model_params.get('dropout', 0.1), batch_first=True
+        )
         self.transformer_encoder = nn.TransformerEncoder(encoder_layer, num_encoder_layers)
         
-        self.fc_out = nn.Linear(d_model, self.total_output_size)
+        self.tablature_head = nn.Linear(d_model, self.tab_output_size)
+        
+        if self.predict_onsets:
+            logger.debug(f"Calculated onset head output size: {self.onset_output_size}")
+            self.onset_head = nn.Linear(d_model, self.onset_output_size)
 
-    def forward(self, x: torch.Tensor) -> torch.Tensor:
+    def forward(self, x: torch.Tensor):
+        logger.debug(f"[Transformer] --- forward pass start ---")
+        logger.debug(f"[Transformer] Input: {describe(x)}")
         B, C, F, T = x.shape
-        x = x.permute(0, 3, 1, 2)
-        x = x.reshape(B, T, -1)
+        
+        x = x.permute(0, 3, 1, 2).reshape(B, T, -1)
+        logger.debug(f"[Transformer] Reshaped for projection: {describe(x)}")
         
         x = self.input_proj(x) * math.sqrt(self.d_model)
+        logger.debug(f"[Transformer] After input projection: {describe(x)}")
+        
         x = self.pos_encoder(x)
+        logger.debug(f"[Transformer] After positional encoding: {describe(x)}")
         
         out = self.transformer_encoder(x)
+        logger.debug(f"[Transformer] After TransformerEncoder block: {describe(out)}")
         
-        logits = self.fc_out(out)
+        tab_logits = self.tablature_head(out)
+        logger.debug(f"[Transformer] After tablature_head (raw logits): {describe(tab_logits)}")
         
-        return logits.view(B, T, self.num_strings, -1)
+        if self.predict_onsets:
+            onset_logits = self.onset_head(out)
+            logger.debug(f"[Transformer] After onset_head (raw logits): {describe(onset_logits)}")
+            
+            final_output = {
+                "tablature": tab_logits.view(B, T, self.num_strings, -1),
+                "onsets": onset_logits.view(B, T, self.num_strings, -1)
+            }
+            logger.debug(f"[Transformer] Returning final output: {describe(final_output)}")
+            logger.debug(f"  -> 'tablature' tensor: {describe(final_output['tablature'])}")
+            logger.debug(f"  -> 'onsets' tensor: {describe(final_output['onsets'])}")
+            return final_output
+        else:
+            final_output = tab_logits.view(B, T, self.num_strings, -1)
+            logger.debug(f"[Transformer] Returning final output: {describe(final_output)}")
+            return final_output

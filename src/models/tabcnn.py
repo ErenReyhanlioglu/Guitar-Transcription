@@ -1,36 +1,36 @@
 import torch
 import torch.nn as nn
+import logging
 from .base_model import BaseTabModel
+from src.utils.logger import describe
+
+logger = logging.getLogger(__name__)
 
 class TabCNN(BaseTabModel):
-    """
-    A Convolutional Neural Network (CNN) for guitar tablature transcription,
-    inspired by the original TabCNN paper.
-
-    This implementation is designed to work with windowed input frames (`framify`),
-    treating each window as a separate image-like patch for classification.
-    """
     def __init__(self, in_channels: int, num_freq: int, num_strings: int, num_classes: int, config: dict, **kwargs):
-        """
-        Initializes the TabCNN model architecture.
-
-        Args:
-            in_channels (int): Number of input channels for the spectrogram (e.g., 1).
-            num_freq (int): Number of frequency bins in the input spectrogram.
-            num_strings (int): The number of strings for the instrument.
-            num_classes (int): The number of classes per string.
-            config (dict): A dictionary containing the model and data configuration.
-        """
         super().__init__(num_strings, num_classes)
         
-        self.output_mode = config['loss']['type']
-        
-        if self.output_mode == 'softmax_groups':
-            self.total_output_size = self.num_strings * self.num_classes
-        elif self.output_mode == 'logistic_bank':
-            self.total_output_size = self.num_strings * (self.num_classes - 1)
+        self.config = config
+        self.model_params = self.config['model']['params']
+        self.active_loss = self.config['loss']['active_loss']
+        self.predict_onsets = self.model_params.get('predict_onsets', False)
+
+        logger.info("Initializing TabCNN model...")
+        logger.info(f"  -> Active loss function for output shaping: '{self.active_loss}'")
+        logger.info(f"  -> Onset prediction enabled: {self.predict_onsets}")
+
+        if self.active_loss == 'softmax_groups':
+            self.tab_output_size = self.num_strings * self.num_classes
+        elif self.active_loss == 'logistic_bank':
+            self.tab_output_size = self.num_strings * (self.num_classes - 1)
         else:
-            raise ValueError(f"Unsupported output_mode: {self.output_mode}")
+            raise ValueError(f"Unsupported loss: {self.active_loss}")
+
+        self.onset_output_size = self.num_strings * (self.num_classes - 1)
+        
+        logger.debug(f"Calculated tablature head output size: {self.tab_output_size}")
+        if self.predict_onsets:
+            logger.debug(f"Calculated onset head output size: {self.onset_output_size}")
 
         self.conv = nn.Sequential(
             nn.Conv2d(in_channels, 32, kernel_size=3, padding=1),
@@ -46,36 +46,50 @@ class TabCNN(BaseTabModel):
             nn.Dropout(0.25)
         )
         
-        # This calculation assumes the input is windowed (framified)
-        # The trainer will handle reshaping the input to (B*T, C, F, W)
-        # For MaxPool2d(2,2), both freq and time dimensions are halved.
         conv_out_freq = num_freq // 2
         window_width = config['data'].get('framify_window_size', 9)
         conv_out_time = window_width // 2
         embedding_dim = 64 * conv_out_freq * conv_out_time
+        logger.debug(f"Calculated embedding dimension for FC layers: {embedding_dim}")
 
-        self.fc = nn.Sequential(
+        self.tablature_head = nn.Sequential(
             nn.Linear(embedding_dim, 128),
             nn.ReLU(),
             nn.Dropout(0.5),
-            nn.Linear(128, self.total_output_size)
+            nn.Linear(128, self.tab_output_size)
         )
 
-    def forward(self, x: torch.Tensor) -> torch.Tensor:
-        """
-        Defines the forward pass for the TabCNN model.
+        if self.predict_onsets:
+            self.onset_head = nn.Sequential(
+                nn.Linear(embedding_dim, 128),
+                nn.ReLU(),
+                nn.Dropout(0.5),
+                nn.Linear(128, self.onset_output_size)
+            )
 
-        Args:
-            x (torch.Tensor): Input tensor with shape (Batch, Channels, Freq, Window).
-                              The trainer is responsible for reshaping the original
-                              data to feed windowed frames to this model.
-
-        Returns:
-            torch.Tensor: The output logits from the model.
-                          Shape for SoftmaxGroups: (Batch, num_strings * num_classes)
-                          Shape for LogisticBank: (Batch, num_strings * (num_classes - 1))
-        """
-        out = self.conv(x)
-        out = out.reshape(out.size(0), -1)
-        logits = self.fc(out)
-        return logits
+    def forward(self, x: torch.Tensor):
+        logger.debug(f"[TabCNN] --- forward pass start ---")
+        logger.debug(f"[TabCNN] Input: {describe(x)}")
+        
+        embedding = self.conv(x)
+        logger.debug(f"[TabCNN] After CNN block: {describe(embedding)}")
+        
+        embedding = embedding.reshape(embedding.size(0), -1)
+        logger.debug(f"[TabCNN] After reshape (flattened): {describe(embedding)}")
+        
+        tab_logits = self.tablature_head(embedding)
+        logger.debug(f"[TabCNN] After tablature_head (raw logits): {describe(tab_logits)}")
+        
+        if self.predict_onsets:
+            onset_logits = self.onset_head(embedding)
+            logger.debug(f"[TabCNN] After onset_head (raw logits): {describe(onset_logits)}")
+            
+            final_output = {
+                "tablature": tab_logits,
+                "onsets": onset_logits
+            }
+            logger.debug(f"[TabCNN] Returning final output: {describe(final_output)}")
+            return final_output
+        else:
+            logger.debug(f"[TabCNN] Returning final output: {describe(tab_logits)}")
+            return tab_logits

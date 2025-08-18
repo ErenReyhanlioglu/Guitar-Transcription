@@ -1,38 +1,36 @@
 import torch
 import torch.nn as nn
+import logging
 from .base_model import BaseTabModel
+from src.utils.logger import describe
+
+logger = logging.getLogger(__name__)
 
 class FretNet(BaseTabModel):
-    """
-    A recurrent model for guitar tablature transcription, combining a CNN front-end
-    with a bidirectional LSTM to capture temporal context.
-
-    This version is enhanced with an optional multi-task learning head to predict
-    note onsets simultaneously with tablature, which can improve temporal accuracy.
-    """
     def __init__(self, in_channels: int, num_freq: int, num_strings: int, num_classes: int, config: dict, **kwargs):
-        """
-        Initializes the FretNet model architecture.
-        """
         super().__init__(num_strings, num_classes)
         
         self.config = config
-        # --- DÜZELTME BAŞLANGICI ---
-        # Model parametrelerini doğru yoldan alıp bir değişkene atayalım
         self.model_params = self.config['model']['params'] 
-        # --- DÜZELTME BİTİŞİ ---
-
-        self.output_mode = self.config['loss']['type']
-        
-        # Artık doğru değişkeni kullanıyoruz
+        self.active_loss = self.config['loss']['active_loss']
         self.predict_onsets = self.model_params.get('predict_onsets', False)
         
-        if self.output_mode == 'softmax_groups':
+        logger.info("Initializing FretNet model...")
+        logger.info(f"  -> Active loss function for output shaping: '{self.active_loss}'")
+        logger.info(f"  -> Onset prediction enabled: {self.predict_onsets}")
+
+        if self.active_loss == 'softmax_groups':
             self.tab_output_size = self.num_strings * self.num_classes
-        elif self.output_mode == 'logistic_bank':
+        elif self.active_loss == 'logistic_bank':
             self.tab_output_size = self.num_strings * (self.num_classes - 1)
         else:
-            raise ValueError(f"Unsupported output_mode: {self.output_mode}")
+            raise ValueError(f"Unsupported loss: {self.active_loss}")
+
+        self.onset_output_size = self.num_strings * (self.num_classes - 1)
+        
+        logger.debug(f"Calculated tablature head output size: {self.tab_output_size}")
+        if self.predict_onsets:
+            logger.debug(f"Calculated onset head output size: {self.onset_output_size}")
             
         self.conv = nn.Sequential(
             nn.Conv2d(in_channels, 32, kernel_size=3, padding=1),
@@ -47,8 +45,6 @@ class FretNet(BaseTabModel):
 
         conv_out_freq = num_freq // 2 
         rnn_input_size = 64 * conv_out_freq
-        
-        # Artık doğru değişkeni kullanıyoruz
         rnn_hidden_size = self.model_params.get('rnn_hidden_size', 128)
         
         self.rnn = nn.LSTM(
@@ -71,36 +67,40 @@ class FretNet(BaseTabModel):
                 nn.Linear(rnn_hidden_size * 2, 128), 
                 nn.ReLU(),
                 nn.Dropout(0.5),
-                nn.Linear(128, self.tab_output_size)
+                nn.Linear(128, self.onset_output_size) 
             )
 
-    def forward(self, x: torch.Tensor) -> dict | torch.Tensor:
-        """
-        Defines the forward pass for the FretNet model.
-
-        Args:
-            x (torch.Tensor): Input tensor with shape (Batch, Channels, Freq, Time).
-
-        Returns:
-            dict | torch.Tensor: If multi-task learning (predict_onsets) is enabled,
-                                returns a dictionary {'tablature': tab_logits, 'onsets': onset_logits}.
-                                Otherwise, returns a single tensor of tablature logits.
-        """
+    def forward(self, x: torch.Tensor):
+        logger.debug(f"[FretNet] --- forward pass start ---")
+        logger.debug(f"[FretNet] Input: {describe(x)}")
         B, C, F, T = x.shape
         
-        out = self.conv(x)
-        out = out.permute(0, 3, 1, 2)
-        out = out.reshape(B, T, -1)
+        conv_out = self.conv(x)
+        logger.debug(f"[FretNet] After CNN block: {describe(conv_out)}")
         
-        rnn_out, _ = self.rnn(out)
+        # Reshape for RNN: (B, C_out, F_out, T) -> (B, T, C_out * F_out)
+        rnn_in = conv_out.permute(0, 3, 1, 2).reshape(B, T, -1)
+        logger.debug(f"[FretNet] Reshaped for RNN: {describe(rnn_in)}")
+        
+        rnn_out, _ = self.rnn(rnn_in)
+        logger.debug(f"[FretNet] After RNN block: {describe(rnn_out)}")
         
         tab_logits = self.tablature_head(rnn_out)
+        logger.debug(f"[FretNet] After tablature_head (raw logits): {describe(tab_logits)}")
         
         if self.predict_onsets:
             onset_logits = self.onset_head(rnn_out)
-            return {
+            logger.debug(f"[FretNet] After onset_head (raw logits): {describe(onset_logits)}")
+            
+            final_output = {
                 "tablature": tab_logits.view(B, T, self.num_strings, -1),
                 "onsets": onset_logits.view(B, T, self.num_strings, -1)
             }
+            logger.debug(f"[FretNet] Returning final output: {describe(final_output)}")
+            logger.debug(f"  -> 'tablature' tensor: {describe(final_output['tablature'])}")
+            logger.debug(f"  -> 'onsets' tensor: {describe(final_output['onsets'])}")
+            return final_output
         else:
-            return tab_logits.view(B, T, self.num_strings, -1)
+            final_output = tab_logits.view(B, T, self.num_strings, -1)
+            logger.debug(f"[FretNet] Returning final output: {describe(final_output)}")
+            return final_output
