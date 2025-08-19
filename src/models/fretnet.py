@@ -88,19 +88,24 @@ class FretNet(BaseTabModel):
         tab_logits = self.tablature_head(rnn_out)
         logger.debug(f"[FretNet] After tablature_head (raw logits): {describe(tab_logits)}")
         
+        if self.active_loss == 'softmax_groups':
+            num_output_classes_per_string = self.num_classes
+        else: # logistic_bank
+            num_output_classes_per_string = self.num_classes - 1
+
         if self.predict_onsets:
             onset_logits = self.onset_head(rnn_out)
             logger.debug(f"[FretNet] After onset_head (raw logits): {describe(onset_logits)}")
             
             final_output = {
-                "tablature": tab_logits.view(B, T, self.num_strings, -1),
-                "onsets": onset_logits.view(B, T, self.num_strings, -1)
+                "tablature": tab_logits.view(B, T, self.num_strings, num_output_classes_per_string),
+                "onsets": onset_logits.view(B, T, self.num_strings, num_output_classes_per_string)
             }
             logger.debug(f"[FretNet] Returning final output: {describe(final_output)}")
-            logger.debug(f"  -> 'tablature' tensor: {describe(final_output['tablature'])}")
-            logger.debug(f"  -> 'onsets' tensor: {describe(final_output['onsets'])}")
+            logger.debug(f"  -> 'tablature' tensor: {describe(final_output['tablature'])}")
+            logger.debug(f"  -> 'onsets' tensor: {describe(final_output['onsets'])}")
             return final_output
         else:
-            final_output = tab_logits.view(B, T, self.num_strings, -1)
+            final_output = tab_logits.view(B, T, self.num_strings, num_output_classes_per_string)
             logger.debug(f"[FretNet] Returning final output: {describe(final_output)}")
             return final_output

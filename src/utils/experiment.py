@@ -94,12 +94,33 @@ def generate_experiment_report(model: torch.nn.Module, history: dict, val_loader
     sample_path = os.path.join(charts_path, "sample_outputs")
     os.makedirs(sample_path, exist_ok=True)
     
+    tab_metrics_path = os.path.join(charts_path, "tablature")
+    mp_metrics_path = os.path.join(charts_path, "multi_pitch")
+    octave_metrics_path = os.path.join(charts_path, "octave_tolerated")
+    os.makedirs(tab_metrics_path, exist_ok=True)
+    os.makedirs(mp_metrics_path, exist_ok=True)
+    os.makedirs(octave_metrics_path, exist_ok=True)
+    
     plot_loss_curves(history, os.path.join(charts_path, "loss_curve.png"))
-    plot_metrics_custom(history, 'val_tab_f1', 'train_tab_f1', 'Tablature F1 Score', os.path.join(charts_path, "tab_f1_curve.png"))
-    plot_metrics_custom(history, 'val_mp_f1', 'train_mp_f1', 'Multi-pitch F1 Score', os.path.join(charts_path, "mp_f1_curve.png"))
+    logger.info(f"Loss curve plot saved to {os.path.join(charts_path, 'loss_curve.png')}")
+
+    plot_metrics_custom(history, 'val_tab_f1', 'train_tab_f1', 'Tablature F1 Score', os.path.join(tab_metrics_path, "tab_f1_curve.png"))
+    plot_metrics_custom(history, 'val_tab_precision', 'train_tab_precision', 'Tablature Precision', os.path.join(tab_metrics_path, "tab_precision_curve.png"))
+    plot_metrics_custom(history, 'val_tab_recall', 'train_tab_recall', 'Tablature Recall', os.path.join(tab_metrics_path, "tab_recall_curve.png"))
+    logger.info(f"Tablature F1, Precision, and Recall plots saved to {tab_metrics_path}.")
+
+    plot_metrics_custom(history, 'val_mp_f1', 'train_mp_f1', 'Multi-pitch F1 Score', os.path.join(mp_metrics_path, "mp_f1_curve.png"))
+    plot_metrics_custom(history, 'val_mp_precision', 'train_mp_precision', 'Multi-pitch Precision', os.path.join(mp_metrics_path, "mp_precision_curve.png"))
+    plot_metrics_custom(history, 'val_mp_recall', 'train_mp_recall', 'Multi-pitch Recall', os.path.join(mp_metrics_path, "mp_recall_curve.png"))
+    logger.info(f"Multi-pitch F1, Precision, and Recall plots saved to {mp_metrics_path}.")
+
     if 'val_octave_f1' in history:
-        plot_metrics_custom(history, 'val_octave_f1', 'train_octave_f1', 'Octave Tolerant F1 Score', os.path.join(charts_path, "octave_f1_curve.png"))
-    logger.info("History plots saved.")
+        plot_metrics_custom(history, 'val_octave_f1', 'train_octave_f1', 'Octave Tolerant F1 Score', os.path.join(octave_metrics_path, "octave_f1_curve.png"))
+        plot_metrics_custom(history, 'val_octave_precision', 'train_octave_precision', 'Octave Tolerant Precision', os.path.join(octave_metrics_path, "octave_precision_curve.png"))
+        plot_metrics_custom(history, 'val_octave_recall', 'train_octave_recall', 'Octave Tolerant Recall', os.path.join(octave_metrics_path, "octave_recall_curve.png"))
+        logger.info(f"Octave Tolerant F1, Precision, and Recall plots saved to {octave_metrics_path}.")
+    
+    logger.info("All history plots have been saved.")
 
     logger.info("Generating a sample batch for visual comparison...")
     try:
@@ -111,6 +132,10 @@ def generate_experiment_report(model: torch.nn.Module, history: dict, val_loader
     profile = GuitarProfile(config['instrument'])
     feature_key = config['feature_definitions'][config['data']['active_feature']]['key']
     preparation_mode = config['data'].get('active_preparation_mode', 'windowing')
+
+    hop_length = config['data']['hop_length']
+    sample_rate = config['data']['sample_rate']
+    hop_seconds = hop_length / sample_rate
     
     model.eval()
     with torch.no_grad():
@@ -158,16 +183,16 @@ def generate_experiment_report(model: torch.nn.Module, history: dict, val_loader
     gt_tab_np = sample_batch["tablature"][0].cpu().numpy()
     pred_tab_np = pred_tab_tensor[0].cpu().numpy()
     
-    plot_spectrogram(feature_np, os.path.join(sample_path, "sample_spectrogram.png"))
-    plot_guitar_tablature(gt_tab_np, os.path.join(sample_path, "sample_tablature_ground_truth.png"), title="Ground Truth Tablature")
-    plot_guitar_tablature(pred_tab_np, os.path.join(sample_path, "sample_tablature_prediction.png"), title="Predicted Tablature")
+    plot_spectrogram(feature_np, hop_seconds, save_path=os.path.join(sample_path, "sample_spectrogram.png"))
+    plot_guitar_tablature(gt_tab_np, hop_seconds, save_path=os.path.join(sample_path, "sample_tablature_ground_truth.png"), title="Ground Truth Tablature")
+    plot_guitar_tablature(pred_tab_np, hop_seconds, save_path=os.path.join(sample_path, "sample_tablature_prediction.png"), title="Predicted Tablature")
     
     gt_smp = tablature_to_stacked_multi_pitch(torch.from_numpy(gt_tab_np).unsqueeze(0), profile)
     gt_pianoroll = stacked_multi_pitch_to_multi_pitch(gt_smp).squeeze(0).numpy()
     pred_smp = tablature_to_stacked_multi_pitch(torch.from_numpy(pred_tab_np).unsqueeze(0), profile)
     pred_pianoroll = stacked_multi_pitch_to_multi_pitch(pred_smp).squeeze(0).numpy()
     
-    plot_pianoroll(gt_pianoroll, os.path.join(sample_path, "sample_pianoroll_ground_truth.png"), title="Ground Truth (Pianoroll View)")
-    plot_pianoroll(pred_pianoroll, os.path.join(sample_path, "sample_pianoroll_prediction.png"), title="Prediction (Pianoroll View)")
+    plot_pianoroll(gt_pianoroll, hop_seconds, save_path=os.path.join(sample_path, "sample_pianoroll_ground_truth.png"), title="Ground Truth (Pianoroll View)")
+    plot_pianoroll(pred_pianoroll, hop_seconds, save_path=os.path.join(sample_path, "sample_pianoroll_prediction.png"), title="Prediction (Pianoroll View)")
 
     logger.info("Experiment report generation complete.")

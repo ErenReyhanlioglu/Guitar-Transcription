@@ -34,32 +34,123 @@ def estimate_hop_length(times):
     return hop_length
 
 def tablature_to_logistic(targets_tab, num_strings, num_classes):
+    """
+    Converts a single-note-per-string tablature representation to a multi-label logistic format
+    with enhanced logging.
+    """
     logger.debug(f"[tab_to_logistic] Inputs - targets_tab: {describe(targets_tab)}")
+    
     B, T, S = targets_tab.shape
     num_frets = num_classes - 1
-    targets_logistic = torch.zeros(B * T, S * num_frets, device=targets_tab.device, dtype=torch.float32)
+    device = targets_tab.device
+    
+    targets_logistic = torch.zeros(B * T, S * num_frets, device=device, dtype=torch.float32)
+    
     targets_flat = targets_tab.reshape(B * T, S)
+    logger.debug(f"[tab_to_logistic] Targets reshaped to flat format: {describe(targets_flat)}")
+
+    total_targets = targets_flat.numel()
+    silent_targets = torch.sum(targets_flat == -1).item()
+    active_targets = total_targets - silent_targets
+    logger.debug(
+        f"[tab_to_logistic] Targets statistics: "
+        f"Total frames: {targets_flat.shape[0]}, Total strings: {targets_flat.shape[1]}, "
+        f"Silent predictions: {silent_targets}, Active predictions: {active_targets}"
+    )
+    
     for s in range(S):
         fret_values = targets_flat[:, s]
+        
         active_mask = (fret_values >= 0) & (fret_values < num_frets)
-        if not torch.any(active_mask):
-            continue
-        active_frame_indices = torch.where(active_mask)[0]
-        active_frets = fret_values[active_mask].long()
-        logistic_indices = s * num_frets + active_frets
-        targets_logistic[active_frame_indices, logistic_indices] = 1.0
+        
+        if torch.any(active_mask):
+            active_frame_indices = torch.where(active_mask)[0]
+            active_frets = fret_values[active_mask].long()
+            
+            logistic_indices = s * num_frets + active_frets
+            
+            logger.debug(
+                f"[tab_to_logistic] String {s} conversion: "
+                f"Found {len(active_frame_indices)} active frames. "
+                f"Active frets: {active_frets.tolist()[:5]}..., " 
+                f"Mapped logistic indices: {logistic_indices.tolist()[:5]}..." 
+            )
+            
+            targets_logistic[active_frame_indices, logistic_indices] = 1.0
+        else:
+            logger.debug(f"[tab_to_logistic] String {s} conversion: No active frets found.")
+
     logger.debug(f"[tab_to_logistic] Returning targets_logistic: {describe(targets_logistic)}")
+    
+    total_positives = torch.sum(targets_logistic == 1.0).item()
+    logger.debug(f"[tab_to_logistic] Final logistic tensor statistics: Total positive labels set: {total_positives}")
+    
     return targets_logistic
 
-def logistic_to_tablature(preds_logistic, num_strings, num_classes, threshold=0.5):
+def logistic_to_tablature(preds_logistic, num_strings, num_classes, threshold=0.1):
+    """
+    Converts logistic bank predictions to a tablature matrix, correctly handling multi-label output.
+    
+    This revised version avoids the torch.max operation to fully embrace the multi-label nature of
+    the logistic bank approach, aligning with standard practices in literature.
+
+    Parameters
+    ----------
+    preds_logistic : tensor (N x (S * F))
+        Array of flattened predictions from a logistic model.
+    num_strings : int
+        Number of strings/degrees of freedom.
+    num_classes : int
+        Number of classes including silence.
+    threshold : float
+        Threshold for probability above which a prediction is considered active.
+
+    Returns
+    ----------
+    fret_indices : tensor (N x S)
+        Tablature matrix where each entry is a fret number or silence class.
+    """
     logger.debug(f"[logistic_to_tab] Inputs - preds_logistic: {describe(preds_logistic)}, threshold: {threshold}")
+    
     N, _ = preds_logistic.shape
     num_frets = num_classes - 1
     silence_class = num_frets
-    preds_reshaped = preds_logistic.view(N, num_strings, num_frets)
-    fret_probs, fret_indices = torch.max(preds_reshaped, dim=2)
-    silent_mask = fret_probs < threshold
-    fret_indices[silent_mask] = silence_class
+    device = preds_logistic.device
+    
+    probs = torch.sigmoid(preds_logistic)
+    
+    preds_reshaped = probs.view(N, num_strings, num_frets)
+    
+    active_mask = preds_reshaped >= threshold
+    
+    fret_indices = torch.full((N, num_strings), silence_class, dtype=torch.long, device=device)
+    
+    fret_probs, max_fret_indices = torch.max(preds_reshaped, dim=2)
+    
+    above_threshold_count = torch.sum(active_mask)
+    total_preds = preds_reshaped.numel()
+    logger.debug(
+        f"[logistic_to_tab] Prediction statistics: "
+        f"Total predictions: {total_preds}, "
+        f"Above threshold ({threshold}): {above_threshold_count}, "
+        f"Percentage: {100.0 * above_threshold_count / total_preds:.2f}%"
+    )
+
+    for s in range(num_strings):
+        string_active_mask = active_mask[:, s, :]
+        
+        frames_with_active_preds = torch.any(string_active_mask, dim=1)
+        
+        if torch.any(frames_with_active_preds):
+            fret_indices[frames_with_active_preds, s] = max_fret_indices[frames_with_active_preds, s]
+            
+            logger.debug(
+                f"[logistic_to_tab] String {s} analysis: "
+                f"Active frames: {torch.sum(frames_with_active_preds)}, "
+                f"Max prob: {torch.max(fret_probs[frames_with_active_preds, s]):.4f}, "
+                f"Min prob: {torch.min(fret_probs[frames_with_active_preds, s]):.4f}"
+            )
+
     logger.debug(f"[logistic_to_tab] Returning fret_indices: {describe(fret_indices)}")
     return fret_indices
 
@@ -102,9 +193,6 @@ def stacked_multi_pitch_to_multi_pitch(stacked_multi_pitch):
         multi_pitch = np.max(stacked_multi_pitch, axis=-3)
     logger.debug(f"[smp_to_mp] Returning multi_pitch: {describe(multi_pitch)}")
     return multi_pitch
-
-# The rest of the helper functions are very low-level.
-# Adding logs to them would create too much noise, but can be done if specific debugging is needed.
 
 def stacked_multi_pitch_to_logistic(stacked_multi_pitch, profile, silence=False):
     tuning = profile.get_midi_tuning()

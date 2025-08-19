@@ -138,7 +138,6 @@ class Trainer:
             targets_logistic = tablature_to_logistic(targets, self.model.num_strings, self.model.num_classes).to(self.device)
             logger.debug(f"  -> Converted targets to logistic bank format: {describe(targets_logistic)}")
             
-            # FretNet/Transformer (4D) ve TabCNN (2D) çıktılarını yönet
             if len(logits.shape) == 4:
                 preds_reshaped = logits.view(logits.size(0) * logits.size(1), -1)
             else:
@@ -231,8 +230,13 @@ class Trainer:
             logits_flat = logits.reshape(logits.shape[0], -1)
             probs = torch.sigmoid(logits_flat)
             pred_threshold = self.config['post_processing'].get('prediction_threshold', 0.5)
+            
+            # logistic_to_tablature fonksiyonunun revize edilmiş çağrısı
             preds_tab_raw = logistic_to_tablature(
-                probs, self.model.num_strings, self.model.num_classes, threshold=pred_threshold
+                preds_logistic=probs,
+                num_strings=self.model.num_strings,
+                num_classes=self.model.num_classes,
+                threshold=pred_threshold
             )
             logger.debug(f"  -> Converted logistic logits to tablature preds: {describe(preds_tab_raw)}")
         else: 

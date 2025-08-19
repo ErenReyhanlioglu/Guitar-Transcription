@@ -29,6 +29,8 @@ data:
   num_workers: 2
   validation_split_size: 0.2
   random_state: 42
+  hop_length: 512
+  sample_rate: 22050
 
 # ------------------ Model Selection and Parameters ------------------
 model:
@@ -114,10 +116,11 @@ logging_and_checkpointing:
   # ------------------------------------------------------------------------------------
   log_levels:
     __main__: "INFO"
-    src.trainer: "INFO"             
-    src.data_loader: "INFO"         
-    src.utils.losses: "INFO"        
-    src.utils.metrics: "INFO"     
-    src.utils.agt_tools: "INFO"
-    src.utils.experiment: "INFO"  
-    src.models.transformer: "INFO"  
+    src.trainer: "DEBUG"
+    src.data_loader: "DEGUB"
+    src.utils.losses: "DEBUG"
+    src.utils.metrics: "INFO"
+    src.utils.agt_tools: "DEBUG"
+    src.utils.experiment: "INFO"
+    src.utils.analyze_errors: "INFO"
+    src.models.transformer: "DEBUG"   

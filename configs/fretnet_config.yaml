@@ -30,6 +30,8 @@ data:
   num_workers: 2
   validation_split_size: 0.2
   random_state: 42
+  hop_length: 512
+  sample_rate: 22050
 
 # ------------------ Model Selection and Parameters ------------------
 model:
@@ -55,7 +57,7 @@ instrument:
 loss:
   active_loss: "logistic_bank" # "softmax_groups" or "logistic_bank" 
 
-  use_focal: true                 
+  use_focal: True                 
   focal_gamma: 2.75                
   use_class_weights: true         
   class_weights_silence_factor: 0.5 
@@ -65,8 +67,8 @@ loss:
       {}
 
     logistic_bank:
-      lmbda: 1.0          
-      focal_alpha: 0.25   
+      lmbda: 0.01          
+      focal_alpha: 0.75   
       
 # ------------------ Training Parameters ------------------
 training:
@@ -96,7 +98,7 @@ training:
 # ------------------ Post-Processing Settings ------------------
 post_processing:
   min_duration_frames: 0 # Short note filter (0 = disabled)
-  prediction_threshold: 0.5 # Probability threshold for LogisticBank
+  prediction_threshold: 0.3 # Probability threshold for LogisticBank
   
 # ------------------ Evaluation Metrics Settings ------------------
 metrics:
@@ -116,10 +118,11 @@ logging_and_checkpointing:
   # ------------------------------------------------------------------------------------
   log_levels:
     __main__: "INFO"
-    src.trainer: "INFO"
-    src.data_loader: "INFO"
-    src.utils.losses: "INFO"
+    src.trainer: "DEBUG"
+    src.data_loader: "DEGUB"
+    src.utils.losses: "DEBUG"
     src.utils.metrics: "INFO"
-    src.utils.agt_tools: "INFO"
+    src.utils.agt_tools: "DEBUG"
     src.utils.experiment: "INFO"
-    src.models.fretnet: "INFO"    
+    src.utils.analyze_errors: "INFO"
+    src.models.fretnet: "DEBUG"    
