@@ -9,13 +9,14 @@ from sklearn.model_selection import train_test_split
 from sklearn.metrics import confusion_matrix
 import matplotlib.pyplot as plt
 import logging 
+from pathlib import Path
 
 import sys
-PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-if PROJECT_ROOT not in sys.path:
-    sys.path.append(PROJECT_ROOT)
+PROJECT_ROOT_PATH = Path(__file__).resolve().parent.parent.parent
+if str(PROJECT_ROOT_PATH) not in sys.path:
+    sys.path.append(str(PROJECT_ROOT_PATH))
 
-from src.models import TabCNN, FretNet, Transformer
+from src.models import get_model 
 from src.data_loader import TablatureDataset, get_dataloaders
 from torch.utils.data import DataLoader
 from src.utils.metrics import finalize_output
@@ -28,6 +29,7 @@ from src.utils.logger import setup_logger, describe
 def analyze(experiment_path: str, val_loader: DataLoader = None):
     """
     Analyzes the errors of a trained model by generating confusion matrices.
+    This version is updated for the dynamic, multi-feature architecture.
     """
     try:
         EXP_CONFIG_PATH = os.path.join(experiment_path, "config.yaml")
@@ -44,49 +46,20 @@ def analyze(experiment_path: str, val_loader: DataLoader = None):
     logger.info("Starting error analysis script.")
     logger.info(f"Loading configuration from: {EXP_CONFIG_PATH}")
     
-    model_name = config['model']['name']
-    model_params = config['model']['params'].copy()
-    
     MODEL_PATH = os.path.join(experiment_path, "model_best.pt")
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-    model_map = {'TabCNN': TabCNN, 'FretNet': FretNet, 'Transformer': Transformer}
     
-    feature_config = config['feature_definitions'][config['data']['active_feature']]
-    in_channels = feature_config['in_channels']
-    num_freq = feature_config['num_freq']
-    num_strings = config['instrument']['num_strings']
-    num_classes = config['data']['num_classes']
-
-    model_params.pop('in_channels', None)
-    model_params.pop('num_freq', None)
-    model_params.pop('num_strings', None)
-    model_params.pop('num_classes', None)
-    model_params.pop('config', None)
-    
-    logger.info(f"Loading '{model_name}' model from: {MODEL_PATH}")
-    
-    model = model_map[model_name](
-        in_channels=in_channels,
-        num_freq=num_freq,
-        num_strings=num_strings,
-        num_classes=num_classes,
-        config=config,
-        **model_params
-    ).to(device)
-
+    logger.info(f"Loading model from: {MODEL_PATH}")
+    model = get_model(config).to(device)
     model.load_state_dict(torch.load(MODEL_PATH, map_location=device))
     model.eval()
-    logger.info(f"'{model_name}' model loaded successfully.")
+    logger.info(f"'{config['model']['name']}' model loaded successfully.")
 
     if val_loader is None:
         logger.info("Validation dataloader not provided. Creating one from config...")
         _, val_loader, _ = get_dataloaders(config)
     
-    profile = GuitarProfile(config['instrument'])
-    active_feature_name = config['data']['active_feature']
-    feature_key = config['feature_definitions'][active_feature_name]['key']
     silence_class = config['data']['silence_class']
-    
     preparation_mode = config['data'].get('active_preparation_mode', 'windowing')
     num_strings = config['instrument']['num_strings']
     num_classes = config['data']['num_classes']
@@ -98,21 +71,31 @@ def analyze(experiment_path: str, val_loader: DataLoader = None):
     
     with torch.no_grad():
         for i, batch in enumerate(val_loader):
-            inputs = batch[feature_key].to(device)
+            inputs = {key: tensor.to(device) for key, tensor in batch['features'].items()}
             targets_full = batch['tablature']
             
-            if i == 0:
-                logger.debug(f"[Batch {i}] Inputs: {describe(inputs)}, Targets: {describe(targets_full)}")
-            
             if preparation_mode == 'framify':
-                framify_win_size = config['data'].get('framify_window_size', 9)
-                pad_amount = framify_win_size // 2
-                inputs_padded = F.pad(inputs, (0, 0, pad_amount, pad_amount), 'constant', 0)
-                unfolded = inputs_padded.unfold(2, framify_win_size, 1).permute(0, 2, 1, 3, 4)
-                B, T, C, F_in, W = unfolded.shape
-                input_frames = unfolded.reshape(B * T, C, F_in, W)
+                input_frames_dict = {}
+                B, T = -1, -1 
+
+                for key, tensor in inputs.items():
+                    framify_win_size = config['data'].get('framify_window_size', 9)
+                    pad_amount = framify_win_size // 2
+                    
+                    # (B, C, Freq, Time) -> pad W (Time) dimension
+                    inputs_padded = F.pad(tensor, (pad_amount, pad_amount, 0, 0), 'constant', 0)
+                    
+                    unfolded = inputs_padded.unfold(3, framify_win_size, 1) 
+                    # unfolded shape: (B, C, F, T_out, W_win_size)
+                    
+                    # Permute to group frames: (B, T_out, C, F, W_win_size)
+                    permuted = unfolded.permute(0, 3, 1, 2, 4)
+                    _B, _T, C, F_in, W = permuted.shape
+                    if B == -1: B, T = _B, _T
+                    
+                    input_frames_dict[key] = permuted.reshape(B * T, C, F_in, W)
                 
-                logits_flat = model(input_frames)
+                logits_flat = model(input_frames_dict)
                 
                 if config['loss']['active_loss'] == 'logistic_bank':
                     num_output_classes = num_classes - 1
@@ -120,6 +103,7 @@ def analyze(experiment_path: str, val_loader: DataLoader = None):
                     num_output_classes = num_classes
                 
                 logits = logits_flat.view(B, T, num_strings, num_output_classes)
+
             else: # 'windowing'
                 logits = model(inputs)
 
@@ -139,7 +123,6 @@ def analyze(experiment_path: str, val_loader: DataLoader = None):
                     num_classes=num_classes, 
                     threshold=pred_threshold
                 ).view(targets.shape[0], targets.shape[1], -1)
-
             else: 
                 preds = finalize_output(
                     logits.cpu(),
@@ -169,14 +152,11 @@ def analyze(experiment_path: str, val_loader: DataLoader = None):
         preds_s = all_preds_tab_flat[:, s].flatten().numpy()
         targets_s = all_targets_tab_flat[:, s].flatten().numpy()
         
-        true_labels = targets_s
-        pred_labels = preds_s
-        
         logger.info(f"Generating confusion matrix for String {s+1}...")
-        cm = confusion_matrix(true_labels, pred_labels, labels=np.arange(num_classes))
+        cm = confusion_matrix(targets_s, preds_s, labels=np.arange(num_classes))
         target_names = [f'F{i}' for i in range(num_classes - 1)] + ['Silence']
         
-        plot_confusion_matrix(cm, target_names=target_names, title=f'String {s+1} Confusion Matrix - {model_name}')
+        plot_confusion_matrix(cm, target_names=target_names, title=f'String {s+1} Confusion Matrix - {config["model"]["name"]}')
         save_path = os.path.join(eval_dir, f'confusion_matrix_string_{s+1}.png')
         plt.savefig(save_path, bbox_inches='tight')
         plt.close()

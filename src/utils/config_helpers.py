@@ -9,10 +9,10 @@ def process_config(config: dict) -> dict:
     """
     Parses the raw config dictionary, setting up derived parameters 
     and preparing it for the training pipeline.
+    This version is updated to handle a list of active features.
     """
     active_dataset = config['dataset']
     logger.info(f"Active dataset selected: '{active_dataset}'")
-    
     config['data'].update(config['dataset_configs'][active_dataset])
 
     active_prep_mode = config['data']['active_preparation_mode']
@@ -25,19 +25,21 @@ def process_config(config: dict) -> dict:
     config['loss'].update(loss_params)
     logger.info(f"Active loss function: '{active_loss_name}' with {loss_params}")
 
-    active_feature_name = config['data']['active_feature']
-    feature_params = config['feature_definitions'][active_feature_name]
-    config['model']['params']['in_channels'] = feature_params['in_channels']
-    config['model']['params']['num_freq'] = feature_params['num_freq']
-    logger.info(f"Active feature set to: '{active_feature_name}' (in_channels={feature_params['in_channels']}, num_freq={feature_params['num_freq']})")
+    if 'active_features' not in config['data']:
+        raise ValueError("'data.active_features' listesi config dosyasında bulunamadı.")
+        
+    active_features_list = config['data']['active_features']
+    logger.info(f"Active features set to: {active_features_list}")
+
+    for feature in active_features_list:
+        if feature not in config['feature_definitions']:
+            raise ValueError(f"Aktif özellik '{feature}', 'feature_definitions' içinde tanımlanmamış.")
 
     num_frets = config['instrument']['num_frets']
-    
-    silence_class_idx = num_frets + 1 
-    total_model_classes = num_frets + 2
+    silence_class_idx = num_frets + 1  #  19 + 1 = 20
+    total_model_classes = num_frets + 2 # 19 + 2 = 21 (0-19. frets + silence)
 
     config['data']['silence_class'] = silence_class_idx 
-    
     config['data']['num_classes'] = total_model_classes
     config['model']['params']['num_classes'] = total_model_classes
     config['model']['params']['num_strings'] = config['instrument']['num_strings']

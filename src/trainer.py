@@ -41,8 +41,7 @@ class Trainer:
         
         self.loss_fn = self._setup_loss_function()
         
-        active_feature_name = self.data_config['active_feature']
-        self.feature_key = self.config['feature_definitions'][active_feature_name]['key']
+        self.active_features = self.data_config['active_features']
         self.history = initial_history if initial_history else self._create_empty_history()
         
         self.use_amp = self.training_config.get('use_mixed_precision', False)
@@ -51,6 +50,7 @@ class Trainer:
         
         logger.info("Trainer initialized.")
         logger.info(f"  -> Using device: {self.device}")
+        logger.info(f"  -> Active features: {self.active_features}")
         logger.info(f"  -> Mixed precision (AMP) enabled: {self.use_amp}")
         logger.info(f"  -> Data preparation mode: {self.preparation_mode}")
 
@@ -147,7 +147,11 @@ class Trainer:
             return self.loss_fn(preds_reshaped, targets_logistic.view(-1, preds_reshaped.shape[-1]), class_weights=self.class_weights)
 
     def _prepare_model_input(self, batch):
-        return batch[self.feature_key].to(self.device)
+        """Prepares the model input by moving feature tensors to the correct device."""
+        return {
+            key: tensor.to(self.device)
+            for key, tensor in batch['features'].items()
+        }
     
     def _run_epoch(self, data_loader, is_training=True):
         self.model.train(is_training)
@@ -159,8 +163,6 @@ class Trainer:
             inputs = self._prepare_model_input(batch)
             targets_full = batch['tablature']
             
-            if i == 0: logger.debug(f"First batch input: {describe(inputs)}, First batch targets: {describe(targets_full)}")
-            
             with torch.set_grad_enabled(is_training):
                 self.optimizer.zero_grad(set_to_none=True)
                 with autocast(enabled=self.use_amp):
@@ -170,21 +172,22 @@ class Trainer:
                         loss = self._compute_loss(logits, targets, batch)
                     
                     elif self.preparation_mode == 'framify':
-                        framify_win_size = self.config['data'].get('framify_window_size', 9)
-                        pad_amount = framify_win_size // 2
-                        inputs_padded = F.pad(inputs, (0, 0, pad_amount, pad_amount), 'constant', 0)
-                        logger.debug(f"  [Framify] Padded inputs: {describe(inputs_padded)}")
-                        
-                        unfolded = inputs_padded.unfold(2, framify_win_size, 1).permute(0, 2, 1, 3, 4)
-                        logger.debug(f"  [Framify] Unfolded inputs: {describe(unfolded)}")
-                        B, T, C, F, W = unfolded.shape
-                        
-                        input_frames = unfolded.reshape(B * T, C, F, W)
-                        logger.debug(f"  [Framify] Reshaped for model input: {describe(input_frames)}")
-                        
-                        logits_flat = self.model(input_frames)
-                        logger.debug(f"  [Framify] Flat logits from model: {describe(logits_flat)}")
+                        input_frames_dict = {}
+                        B, T = -1, -1 
 
+                        for key, tensor in inputs.items():
+                            framify_win_size = self.config['data'].get('framify_window_size', 9)
+                            pad_amount = framify_win_size // 2
+                            inputs_padded = F.pad(tensor, (0, 0, pad_amount, pad_amount), 'constant', 0)
+                            
+                            unfolded = inputs_padded.unfold(2, framify_win_size, 1).permute(0, 2, 1, 3, 4)
+                            _B, _T, C, F, W = unfolded.shape
+                            if B == -1: B, T = _B, _T
+                            
+                            input_frames_dict[key] = unfolded.reshape(B * T, C, F, W)
+                        
+                        logits_flat = self.model(input_frames_dict)
+                        
                         num_output_classes = -1
                         if self.loss_config['active_loss'] == 'softmax_groups':
                             num_output_classes = self.config['data']['num_classes']
@@ -192,8 +195,6 @@ class Trainer:
                             num_output_classes = self.config['data']['num_classes'] - 1
                             
                         logits = logits_flat.view(B, T, self.model.num_strings, num_output_classes)
-                        logger.debug(f"  [Framify] Reshaped logits to 4D: {describe(logits)}")
-                        
                         targets = targets_full.permute(0, 2, 1)
                         loss = self._compute_loss(logits, targets, batch)
                     else:
@@ -215,11 +216,9 @@ class Trainer:
 
         all_logits = torch.cat(all_logits_list, dim=0)
         all_targets = torch.cat(all_targets_list, dim=0)
-        logger.debug(f"Metrics calculation for {desc} epoch. All logits: {describe(all_logits)}, All targets: {describe(all_targets)}")
         
         metrics = self._calculate_metrics(all_logits, all_targets)
         metrics['loss'] = total_loss / len(data_loader)
-        logger.debug(f"Epoch metrics calculated: {describe(metrics)}")
         return metrics
 
     def _calculate_metrics(self, logits, targets):
@@ -231,7 +230,6 @@ class Trainer:
             probs = torch.sigmoid(logits_flat)
             pred_threshold = self.config['post_processing'].get('prediction_threshold', 0.5)
             
-            # logistic_to_tablature fonksiyonunun revize edilmiş çağrısı
             preds_tab_raw = logistic_to_tablature(
                 preds_logistic=probs,
                 num_strings=self.model.num_strings,

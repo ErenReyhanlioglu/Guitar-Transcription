@@ -54,38 +54,39 @@ def create_experiment_directory(base_output_path: str, model_name: str, config: 
     return experiment_path
 
 def save_model_summary(model, config, experiment_path):
-    try:
-        from torchinfo import summary
-    except ImportError:
-        logger.warning("'torchinfo' not found. Model summary will be skipped.")
-        return
-
+    """
+    Saves a simple summary of the model (architecture printout and parameter count)
+    to a text file, avoiding torchinfo for stability.
+    """
     summary_path = os.path.join(experiment_path, "model_summary.txt")
-    data_config = config['data']
-    feature_config = config['feature_definitions'][data_config['active_feature']]
+    logger.info("Generating simple model summary...")
     
-    in_channels = feature_config['in_channels']
-    num_freq = feature_config['num_freq']
-    
-    preparation_mode = data_config.get('active_preparation_mode', 'windowing')
-    if preparation_mode == 'framify':
-        time_dim = data_config.get('framify_window_size', 9) 
-    else: # windowing
-        time_dim = data_config.get('window_size', 200)
-
-    input_size_for_summary = (1, in_channels, num_freq, time_dim)
-    logger.info(f"Generating model summary with input size: {input_size_for_summary}")
-
     try:
-        model_summary = summary(model, input_size=input_size_for_summary, verbose=0,
-                                col_names=["input_size", "output_size", "num_params", "mult_adds"])
+        s = io.StringIO()
+        with redirect_stdout(s):
+            print(model)
+        model_architecture = s.getvalue()
+
+        total_params = sum(p.numel() for p in model.parameters())
+        trainable_params = sum(p.numel() for p in model.parameters() if p.requires_grad)
+        
         with open(summary_path, "w") as f:
-            f.write(str(model_summary))
-        logger.info(f"Model summary saved to {summary_path}")
+            f.write("MODEL ARCHITECTURE:\n")
+            f.write("="*20 + "\n")
+            f.write(model_architecture)
+            f.write("\n\n")
+            f.write("PARAMETER COUNT:\n")
+            f.write("="*20 + "\n")
+            f.write(f"Total params: {total_params:,}\n")
+            f.write(f"Trainable params: {trainable_params:,}\n")
+
+        logger.info(f"Simple model summary saved to {summary_path}")
+
     except Exception as e:
-        logger.error(f"Could not generate or save model summary. Error: {e}", exc_info=True)
+        logger.error(f"Could not generate or save simple model summary. Error: {e}", exc_info=True)
         with open(summary_path, "w") as f:
             f.write(f"Could not generate model summary.\nError: {e}\n")
+
 
 def generate_experiment_report(model: torch.nn.Module, history: dict, val_loader: torch.utils.data.DataLoader, config: dict, experiment_path: str, device: torch.device):
     logger.info("--- Generating Final Experiment Report ---")
@@ -130,7 +131,7 @@ def generate_experiment_report(model: torch.nn.Module, history: dict, val_loader
         return
 
     profile = GuitarProfile(config['instrument'])
-    feature_key = config['feature_definitions'][config['data']['active_feature']]['key']
+    active_features = config['data']['active_features']
     preparation_mode = config['data'].get('active_preparation_mode', 'windowing')
 
     hop_length = config['data']['hop_length']
@@ -139,24 +140,31 @@ def generate_experiment_report(model: torch.nn.Module, history: dict, val_loader
     
     model.eval()
     with torch.no_grad():
-        features = sample_batch[feature_key].to(device)
-        logger.debug(f"Sample report generation - Input features: {describe(features)}")
+        features_dict = {key: tensor.to(device) for key, tensor in sample_batch['features'].items()}
+        logger.debug(f"Sample report generation - Input features: {list(features_dict.keys())}")
         
         if preparation_mode == 'framify':
-            framify_win_size = config['data'].get('framify_window_size', 9)
-            pad_amount = framify_win_size // 2
-            inputs_padded = F.pad(features, (0, 0, pad_amount, pad_amount), 'constant', 0)
-            unfolded = inputs_padded.unfold(2, framify_win_size, 1).permute(0, 2, 1, 3, 4)
-            B, T, C, F, W = unfolded.shape
-            inputs = unfolded.reshape(B * T, C, F, W)
-            logits_flat = model(inputs)
+            input_frames_dict = {}
+            B, T = -1, -1
+            for key, tensor in features_dict.items():
+                framify_win_size = config['data'].get('framify_window_size', 9)
+                pad_amount = framify_win_size // 2
+                inputs_padded = F.pad(tensor, (pad_amount, pad_amount, 0, 0), 'constant', 0)
+                unfolded = inputs_padded.unfold(3, framify_win_size, 1)
+                permuted = unfolded.permute(0, 3, 1, 2, 4)
+                _B, _T, C, H, W_win = permuted.shape
+                if B == -1: B, T = _B, _T
+                input_frames_dict[key] = permuted.reshape(B * T, C, H, W_win)
+            
+            logits_flat = model(input_frames_dict)
+            
             if config['loss']['active_loss'] == 'logistic_bank':
                 num_output_classes = config['data']['num_classes'] - 1
             else:
                 num_output_classes = config['data']['num_classes']
             logits = logits_flat.view(B, T, config['instrument']['num_strings'], num_output_classes)
         else: 
-            logits = model(features)
+            logits = model(features_dict)
 
         if isinstance(logits, dict):
             logits = logits['tablature']
@@ -166,24 +174,33 @@ def generate_experiment_report(model: torch.nn.Module, history: dict, val_loader
         if config['loss']['active_loss'] == 'logistic_bank':
             preds_flat = logits.reshape(-1, logits.shape[-1] * logits.shape[-2])
             pred_tab_tensor = logistic_to_tablature(
-                torch.sigmoid(preds_flat).cpu(), model.num_strings, model.num_classes
-            ).view(logits.shape[0], logits.shape[1], logits.shape[2]) # (B, T, S)
+                torch.sigmoid(preds_flat).cpu(), model.num_strings, model.num_classes,
+                threshold=config.get('post_processing', {}).get('prediction_threshold', 0.5)
+            ).view(logits.shape[0], logits.shape[1], logits.shape[2])
         else: 
             pred_tab_tensor = finalize_output(
                 logits.cpu(), silence_class=config['data']['silence_class'],
-                return_shape="logits", mask_silence=False
+                return_shape="tablature"
             )
         
         pred_tab_tensor = pred_tab_tensor.permute(0, 2, 1) 
         logger.debug(f"Sample report generation - Final predicted tablature tensor: {describe(pred_tab_tensor)}")
 
-    feature_np = features[0].cpu().numpy()
-    if feature_np.ndim == 3 and feature_np.shape[0] > 1:
-        feature_np = np.mean(feature_np, axis=0)
+    logger.info(f"Visualizing spectrograms for all active features: {active_features}")
+    for feature_key in active_features:
+        feature_np = sample_batch['features'][feature_key][0].cpu().numpy()
+        
+        if feature_np.ndim == 3 and feature_np.shape[0] > 1:
+            feature_np = np.mean(feature_np, axis=0)
+        elif feature_np.ndim == 3 and feature_np.shape[0] == 1:
+            feature_np = feature_np.squeeze(0)
+            
+        save_path = os.path.join(sample_path, f"sample_spectrogram_{feature_key}.png")
+        plot_spectrogram(feature_np, hop_seconds, save_path=save_path, title=f"Spectrogram ({feature_key})")
+
     gt_tab_np = sample_batch["tablature"][0].cpu().numpy()
     pred_tab_np = pred_tab_tensor[0].cpu().numpy()
     
-    plot_spectrogram(feature_np, hop_seconds, save_path=os.path.join(sample_path, "sample_spectrogram.png"))
     plot_guitar_tablature(gt_tab_np, hop_seconds, save_path=os.path.join(sample_path, "sample_tablature_ground_truth.png"), title="Ground Truth Tablature")
     plot_guitar_tablature(pred_tab_np, hop_seconds, save_path=os.path.join(sample_path, "sample_tablature_prediction.png"), title="Predicted Tablature")
     

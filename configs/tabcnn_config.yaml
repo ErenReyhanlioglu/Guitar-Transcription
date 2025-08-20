@@ -15,7 +15,7 @@ dataset_configs:
 feature_definitions:
   cqt: {key: "cqt", in_channels: 1, num_freq: 144}
   hcqt: {key: "hcqt", in_channels: 6, num_freq: 144}
-  melspec: {key: "melspec", in_channels: 1, num_freq: 256}
+  mel: {key: "mel", in_channels: 1, num_freq: 256}
 
 # ------------------ Data Loading and Processing Parameters ------------------
 data:
@@ -24,7 +24,7 @@ data:
     windowing: {window_size: 200}
     framify: {framify_window_size: 9}
   
-  active_feature: "hcqt"
+  active_features: ["hcqt", "mel"]
   batch_size: 4
   num_workers: 2
   validation_split_size: 0.2
@@ -48,7 +48,7 @@ instrument:
 
 # ------------------ Loss Function Settings ------------------
 loss:
-  active_loss: "logistic_bank" # "softmax_groups" or "logistic_bank" 
+  active_loss: "softmax_groups" # "softmax_groups" or "logistic_bank" 
 
   use_focal: true                 
   focal_gamma: 2.5                

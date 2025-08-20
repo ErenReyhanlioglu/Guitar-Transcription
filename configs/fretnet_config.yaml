@@ -15,7 +15,7 @@ dataset_configs:
 feature_definitions:
   cqt: {key: "cqt", in_channels: 1, num_freq: 144}
   hcqt: {key: "hcqt", in_channels: 6, num_freq: 144}
-  melspec: {key: "melspec", in_channels: 1, num_freq: 256}
+  mel: {key: "mel", in_channels: 1, num_freq: 256}
 
 # ------------------ Data Loading and Processing Parameters ------------------
 data:
@@ -24,7 +24,7 @@ data:
     windowing: {window_size: 200}
     framify: {framify_window_size: 9}
   
-  active_feature: "hcqt"
+  active_features: ["hcqt", "mel"] 
   target_keys: ["tablature"]
   batch_size: 16
   num_workers: 2
@@ -55,19 +55,19 @@ instrument:
 
 # ------------------ Loss Function Settings ------------------
 loss:
-  active_loss: "logistic_bank" # "softmax_groups" or "logistic_bank" 
+  active_loss: "softmax_groups" # "softmax_groups" or "logistic_bank" 
 
-  use_focal: True                 
-  focal_gamma: 2.75                
-  use_class_weights: true         
-  class_weights_silence_factor: 0.5 
+  use_focal: True               
+  focal_gamma: 2.50             
+  use_class_weights: true       
+  class_weights_silence_factor: 0.6 
 
   configurations:
     softmax_groups:
       {}
 
     logistic_bank:
-      lmbda: 0.01          
+      lmbda: 0.01       
       focal_alpha: 0.75   
       
 # ------------------ Training Parameters ------------------
@@ -118,11 +118,11 @@ logging_and_checkpointing:
   # ------------------------------------------------------------------------------------
   log_levels:
     __main__: "INFO"
-    src.trainer: "DEBUG"
-    src.data_loader: "DEGUB"
-    src.utils.losses: "DEBUG"
+    src.trainer: "INFO"
+    src.data_loader: "INFO" 
+    src.utils.losses: "INFO"
     src.utils.metrics: "INFO"
-    src.utils.agt_tools: "DEBUG"
+    src.utils.agt_tools: "INFO"
     src.utils.experiment: "INFO"
     src.utils.analyze_errors: "INFO"
-    src.models.fretnet: "DEBUG"    
+    src.models.fretnet: "INFO"
