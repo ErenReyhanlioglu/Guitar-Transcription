@@ -39,36 +39,55 @@ def compute_tablature_metrics(preds, targets, include_silence):
     preds_np = preds.cpu().numpy()
     targets_np = targets.cpu().numpy()
     results = {}
+    
     preds_flat = preds_np.flatten()
     targets_flat = targets_np.flatten()
+    
     if not include_silence:
-        mask = (targets_flat != -1)
+        mask = (targets_flat != -1) 
         if mask.sum() == 0: 
-            return {'overall_f1': 1.0, 'overall_precision': 1.0, 'overall_recall': 1.0, 'per_string': {}}
+            return {'overall_f1': 1.0, 'overall_precision': 1.0, 'overall_recall': 1.0,
+                    'overall_f1_macro': 1.0, 'overall_precision_macro': 1.0, 'overall_recall_macro': 1.0,
+                    'per_string': {}}
         preds_flat = preds_flat[mask]
         targets_flat = targets_flat[mask]
+        
     if len(targets_flat) > 0:
-        p = precision_score(targets_flat, preds_flat, average='macro', zero_division=0)
-        r = recall_score(targets_flat, preds_flat, average='macro', zero_division=0)
-        f1 = f1_score(targets_flat, preds_flat, average='macro', zero_division=0)
-        results['overall_f1'] = f1
-        results['overall_precision'] = p
-        results['overall_recall'] = r
+        p_w = precision_score(targets_flat, preds_flat, average='weighted', zero_division=0)
+        r_w = recall_score(targets_flat, preds_flat, average='weighted', zero_division=0)
+        f1_w = f1_score(targets_flat, preds_flat, average='weighted', zero_division=0)
+        
+        p_m = precision_score(targets_flat, preds_flat, average='macro', zero_division=0)
+        r_m = recall_score(targets_flat, preds_flat, average='macro', zero_division=0)
+        f1_m = f1_score(targets_flat, preds_flat, average='macro', zero_division=0)
+        
+        results['overall_precision'] = p_w
+        results['overall_recall'] = r_w
+        results['overall_f1'] = f1_w
+        results['overall_precision_macro'] = p_m
+        results['overall_recall_macro'] = r_m
+        results['overall_f1_macro'] = f1_m
+
     per_string_metrics = {}
     if targets_np.ndim > 1:
         num_strings = targets_np.shape[1]
         for s in range(num_strings):
             preds_s = preds_np[:, s].flatten()
             targets_s = targets_np[:, s].flatten()
+            
             if not include_silence:
                 mask_s = (targets_s != -1)
                 if mask_s.sum() == 0:
                     continue
                 preds_s = preds_s[mask_s]
                 targets_s = targets_s[mask_s]
+                
             if len(targets_s) > 0:
-                f1_s = f1_score(targets_s, preds_s, average='macro', zero_division=0)
-                per_string_metrics[f'string_{s}_f1'] = f1_s
+                f1_s_w = f1_score(targets_s, preds_s, average='weighted', zero_division=0)
+                f1_s_m = f1_score(targets_s, preds_s, average='macro', zero_division=0)
+                per_string_metrics[f'string_{s}_f1'] = f1_s_w 
+                per_string_metrics[f'string_{s}_f1_macro'] = f1_s_m 
+                
     results['per_string'] = per_string_metrics
     logger.debug(f"[tab_metrics] Returning results: {describe(results)}")
     return results
@@ -89,6 +108,55 @@ def compute_multipitch_metrics(preds_tab, targets, profile):
     results = {'multipitch_f1': f1, 'multipitch_precision': p, 'multipitch_recall': r}
     logger.debug(f"[mp_metrics] Returning results: {describe(results)}")
     return results
+
+def compute_octave_tolerant_metrics(preds_tab, targets_tab, tuning, silence_class, num_pitch_classes=12):
+    if not isinstance(preds_tab, torch.Tensor): preds_tab = torch.from_numpy(preds_tab)
+    if not isinstance(targets_tab, torch.Tensor): targets_tab = torch.from_numpy(targets_tab)
+    logger.debug(f"[octave_metrics] Inputs - preds_tab: {describe(preds_tab)}, targets_tab: {describe(targets_tab)}")
+    
+    device = preds_tab.device
+    tuning_tensor = torch.tensor(tuning, device=device).unsqueeze(0)
+
+    valid_preds_mask = (preds_tab != silence_class) & (preds_tab != -1)
+    valid_targets_mask = (targets_tab != silence_class) & (targets_tab != -1)
+    
+    midi_preds_full = tuning_tensor + preds_tab
+    midi_targets_full = tuning_tensor + targets_tab
+    
+    midi_preds = torch.zeros_like(preds_tab)
+    midi_targets = torch.zeros_like(targets_tab)
+    midi_preds[valid_preds_mask] = midi_preds_full[valid_preds_mask]
+    midi_targets[valid_targets_mask] = midi_targets_full[valid_targets_mask]
+    
+    octave_preds = midi_preds % num_pitch_classes
+    octave_preds[~valid_preds_mask] = -1
+    octave_preds[preds_tab == silence_class] = num_pitch_classes 
+
+    octave_targets = midi_targets % num_pitch_classes
+    octave_targets[~valid_targets_mask] = -1
+    octave_targets[targets_tab == silence_class] = num_pitch_classes
+
+    preds_flat = octave_preds.cpu().numpy().flatten()
+    targets_flat = octave_targets.cpu().numpy().flatten()
+    
+    active_mask = (targets_flat != -1) & (targets_flat != num_pitch_classes)
+    preds_flat = preds_flat[active_mask]
+    targets_flat = targets_flat[active_mask]
+    
+    if len(targets_flat) == 0:
+        return {'octave_f1': 1.0, 'octave_precision': 1.0, 'octave_recall': 1.0,
+                'octave_f1_macro': 1.0, 'octave_precision_macro': 1.0, 'octave_recall_macro': 1.0}
+    
+    p_w = precision_score(targets_flat, preds_flat, average='weighted', zero_division=0)
+    r_w = recall_score(targets_flat, preds_flat, average='weighted', zero_division=0)
+    f1_w = f1_score(targets_flat, preds_flat, average='weighted', zero_division=0)
+    
+    p_m = precision_score(targets_flat, preds_flat, average='macro', zero_division=0)
+    r_m = recall_score(targets_flat, preds_flat, average='macro', zero_division=0)
+    f1_m = f1_score(targets_flat, preds_flat, average='macro', zero_division=0)
+    
+    return {'octave_precision': p_w, 'octave_recall': r_w, 'octave_f1': f1_w,
+            'octave_precision_macro': p_m, 'octave_recall_macro': r_m, 'octave_f1_macro': f1_m}
 
 def compute_per_string_class_weights(
     npz_path_list: list[str], 
@@ -135,42 +203,6 @@ def compute_per_string_class_weights(
     logger.debug(f"  -> Counts: {describe(results_tuple[1])}")
     logger.info("Class weights calculation finished.")
     return results_tuple
-
-def compute_octave_tolerant_metrics(preds_tab, targets_tab, tuning, silence_class, num_pitch_classes=12):
-    logger.debug(f"[octave_metrics] Inputs - preds_tab: {describe(preds_tab)}, targets_tab: {describe(targets_tab)}")
-    if not isinstance(preds_tab, torch.Tensor):
-        preds_tab = torch.from_numpy(preds_tab)
-    if not isinstance(targets_tab, torch.Tensor):
-        targets_tab = torch.from_numpy(targets_tab)
-    device = preds_tab.device
-    tuning_tensor = torch.tensor(tuning, device=device).unsqueeze(0)
-    valid_preds_mask = (preds_tab != silence_class) & (preds_tab != -1)
-    valid_targets_mask = (targets_tab != silence_class) & (targets_tab != -1)
-    midi_preds_full = tuning_tensor + preds_tab
-    midi_targets_full = tuning_tensor + targets_tab
-    midi_preds = torch.zeros_like(preds_tab)
-    midi_targets = torch.zeros_like(targets_tab)
-    midi_preds[valid_preds_mask] = midi_preds_full[valid_preds_mask]
-    midi_targets[valid_targets_mask] = midi_targets_full[valid_targets_mask]
-    octave_preds = midi_preds % num_pitch_classes
-    octave_preds[preds_tab == silence_class] = num_pitch_classes
-    octave_preds[preds_tab == -1] = -1
-    octave_targets = midi_targets % num_pitch_classes
-    octave_targets[targets_tab == silence_class] = num_pitch_classes
-    octave_targets[targets_tab == -1] = -1
-    preds_flat = octave_preds.cpu().numpy().flatten()
-    targets_flat = octave_targets.cpu().numpy().flatten()
-    active_mask = (targets_flat != -1)
-    preds_flat = preds_flat[active_mask]
-    targets_flat = targets_flat[active_mask]
-    if len(targets_flat) == 0:
-        return {'octave_f1': 1.0, 'octave_precision': 1.0, 'octave_recall': 1.0}
-    p = precision_score(targets_flat, preds_flat, average='macro', zero_division=0)
-    r = recall_score(targets_flat, preds_flat, average='macro', zero_division=0)
-    f1 = f1_score(targets_flat, preds_flat, average='macro', zero_division=0)
-    results = {'octave_f1': f1, 'octave_precision': p, 'octave_recall': r}
-    logger.debug(f"[octave_metrics] Returning results: {describe(results)}")
-    return results
 
 def apply_duration_threshold(preds_tab, targets, min_duration_frames, silence_class):
     logger.debug(f"[duration_filter] Applying filter with min_duration: {min_duration_frames} to preds: {describe(preds_tab)}")

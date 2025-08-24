@@ -1,171 +1,139 @@
+# src/utils/analyze_errors.py
 import torch
-import yaml
 import numpy as np
 import os
 import argparse
-import torch.nn.functional as F
-from glob import glob
-from sklearn.model_selection import train_test_split
+from torch.utils.data import DataLoader
 from sklearn.metrics import confusion_matrix
 import matplotlib.pyplot as plt
 import logging 
 from pathlib import Path
-
 import sys
+import yaml
+
 PROJECT_ROOT_PATH = Path(__file__).resolve().parent.parent.parent
 if str(PROJECT_ROOT_PATH) not in sys.path:
     sys.path.append(str(PROJECT_ROOT_PATH))
 
-from src.models import get_model 
-from src.data_loader import TablatureDataset, get_dataloaders
-from torch.utils.data import DataLoader
-from src.utils.metrics import finalize_output
 from src.utils.plotting import plot_confusion_matrix
-from src.utils.config_helpers import process_config
-from src.utils.agt_tools import logistic_to_tablature
-from src.utils.guitar_profile import GuitarProfile
-from src.utils.logger import setup_logger, describe 
+from src.utils.logger import setup_logger
+from src.utils.config_helpers import process_config 
+from src.models import get_model                   
+from src.data_loader import get_dataloaders        
+
+logger = logging.getLogger(__name__)
 
 def analyze(experiment_path: str, val_loader: DataLoader = None):
-    """
-    Analyzes the errors of a trained model by generating confusion matrices.
-    This version is updated for the dynamic, multi-feature architecture.
-    """
     try:
         EXP_CONFIG_PATH = os.path.join(experiment_path, "config.yaml")
         with open(EXP_CONFIG_PATH, 'r') as f:
             raw_exp_config = yaml.safe_load(f)
-        config = process_config(raw_exp_config)
+        config = process_config(raw_exp_config) 
     except FileNotFoundError:
-        print(f"Error: Config file not found at {EXP_CONFIG_PATH}. Cannot proceed.")
+        logger.error(f"Config file not found at {EXP_CONFIG_PATH}. Cannot proceed.")
         return
     
-    stateful_filter = setup_logger(config)
-    logger = logging.getLogger(__name__)
+    setup_logger(config)
     
-    logger.info("Starting error analysis script.")
-    logger.info(f"Loading configuration from: {EXP_CONFIG_PATH}")
+    logger.info("--- Starting Error Analysis ---")
+    logger.info(f"Analyzing experiment: {experiment_path}")
     
     MODEL_PATH = os.path.join(experiment_path, "model_best.pt")
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     
+    if val_loader is None:
+        logger.info("Validation dataloader not provided, creating one from config...")
+        _, val_loader, _ = get_dataloaders(config)
+        
     logger.info(f"Loading model from: {MODEL_PATH}")
     model = get_model(config).to(device)
     model.load_state_dict(torch.load(MODEL_PATH, map_location=device))
     model.eval()
-    logger.info(f"'{config['model']['name']}' model loaded successfully.")
-
-    if val_loader is None:
-        logger.info("Validation dataloader not provided. Creating one from config...")
-        _, val_loader, _ = get_dataloaders(config)
-    
-    silence_class = config['data']['silence_class']
-    preparation_mode = config['data'].get('active_preparation_mode', 'windowing')
+    logger.info(f"'{config['model']['name']}' model loaded successfully in eval mode.")
+    num_frets = config['instrument']['num_frets'] 
+    silence_class = config['instrument']['num_frets'] + 1
     num_strings = config['instrument']['num_strings']
-    num_classes = config['data']['num_classes']
+    num_classes = config['model']['params']['num_classes']
 
     all_preds_tab_list, all_targets_tab_list = [], []
-    logger.info("Making predictions on the validation set for analysis...")
-    
-    stateful_filter.reset() 
+    logger.info("Making predictions on the validation set...")
     
     with torch.no_grad():
-        for i, batch in enumerate(val_loader):
+        for batch in val_loader:
             inputs = {key: tensor.to(device) for key, tensor in batch['features'].items()}
-            targets_full = batch['tablature']
+            targets = batch['tablature']
             
-            if preparation_mode == 'framify':
-                input_frames_dict = {}
-                B, T = -1, -1 
-
-                for key, tensor in inputs.items():
-                    framify_win_size = config['data'].get('framify_window_size', 9)
-                    pad_amount = framify_win_size // 2
-                    
-                    # (B, C, Freq, Time) -> pad W (Time) dimension
-                    inputs_padded = F.pad(tensor, (pad_amount, pad_amount, 0, 0), 'constant', 0)
-                    
-                    unfolded = inputs_padded.unfold(3, framify_win_size, 1) 
-                    # unfolded shape: (B, C, F, T_out, W_win_size)
-                    
-                    # Permute to group frames: (B, T_out, C, F, W_win_size)
-                    permuted = unfolded.permute(0, 3, 1, 2, 4)
-                    _B, _T, C, F_in, W = permuted.shape
-                    if B == -1: B, T = _B, _T
-                    
-                    input_frames_dict[key] = permuted.reshape(B * T, C, F_in, W)
-                
-                logits_flat = model(input_frames_dict)
-                
-                if config['loss']['active_loss'] == 'logistic_bank':
-                    num_output_classes = num_classes - 1
-                else:
-                    num_output_classes = num_classes
-                
-                logits = logits_flat.view(B, T, num_strings, num_output_classes)
-
-            else: # 'windowing'
-                logits = model(inputs)
-
-            if isinstance(logits, dict):
-                logits = logits['tablature']
-
-            targets = targets_full.permute(0, 2, 1)
-
-            logger.debug(f"[Batch {i}] Raw logits: {describe(logits)}, Targets: {describe(targets)}")
+            model_output = model(**inputs)
+            tab_logits = model_output[0] if isinstance(model_output, tuple) else model_output
             
-            if config['loss']['active_loss'] == 'logistic_bank':
-                probs = torch.sigmoid(logits.reshape(logits.shape[0], logits.shape[1], -1)).cpu()
-                pred_threshold = config['post_processing'].get('prediction_threshold', 0.5)
-                preds = logistic_to_tablature(
-                    probs.view(-1, probs.shape[-1]), 
-                    num_strings=num_strings, 
-                    num_classes=num_classes, 
-                    threshold=pred_threshold
-                ).view(targets.shape[0], targets.shape[1], -1)
-            else: 
-                preds = finalize_output(
-                    logits.cpu(),
-                    silence_class=silence_class,
-                    return_shape="tablature"
-                )
+            # --- FIX 2: Use the robust logic from Trainer._calculate_all_metrics ---
+            preds_tab = None
+            if config['loss']['active_loss'] == 'softmax_groups':
+                if tab_logits.dim() == 4: # FretNet-like output (B, T, S, C)
+                    preds_tab = torch.argmax(tab_logits.permute(0, 2, 1, 3), dim=-1)
+                elif tab_logits.dim() == 2: # TabCNN-like output (B*T, S*C)
+                    preds_tab = torch.argmax(tab_logits.view(-1, num_strings, num_classes), dim=-1)
+            else:
+                # Placeholder for logistic_bank logic if you implement it later
+                raise NotImplementedError("Analysis for logistic_bank is not implemented yet.")
             
-            logger.debug(f"[Batch {i}] Final Predictions: {describe(preds)}")
+            # Unify both preds and targets to a common flat format (Total_Frames, S)
+            # This makes the logic universal for any model.
             
-            all_preds_tab_list.append(preds.reshape(-1, num_strings))
-            all_targets_tab_list.append(targets.reshape(-1, num_strings))
+            # Flatten predictions
+            if preds_tab.dim() == 3: # FretNet preds (B, S, T) -> flatten
+                preds_flat = preds_tab.permute(0, 2, 1).reshape(-1, num_strings)
+            else: # TabCNN preds are already (B*T, S)
+                preds_flat = preds_tab
+            
+            # Flatten targets
+            if targets.dim() == 3: # FretNet targets (B, S, T) -> flatten
+                targets_flat = targets.permute(0, 2, 1).reshape(-1, num_strings)
+            else: # TabCNN targets are already (B*T, S)
+                targets_flat = targets
+            # --- FIX 2 END ---
 
-    logger.info("Prediction loop completed. Concatenating tensors for analysis...")
+            all_preds_tab_list.append(preds_flat.cpu())
+            all_targets_tab_list.append(targets_flat.cpu())
+
+    logger.info("Concatenating all batches for final analysis...")
     all_preds_tab_flat = torch.cat(all_preds_tab_list, dim=0)
     all_targets_tab_flat = torch.cat(all_targets_tab_list, dim=0)
     
-    logger.debug(f"Concatenated Predictions: {describe(all_preds_tab_flat)}")
-    logger.debug(f"Concatenated Targets: {describe(all_targets_tab_flat)}")
-    
+    # Replace -1 padding with the actual silence class index
     all_targets_tab_flat[all_targets_tab_flat == -1] = silence_class
     
     eval_dir = os.path.join(experiment_path, 'analysis_plots')
     os.makedirs(eval_dir, exist_ok=True)
     logger.info(f"Analysis plots will be saved to: {eval_dir}")
 
+    class_names = [f'F{i}' for i in range(num_frets + 1)] + ["Silence"]
+    
     for s in range(num_strings):
-        preds_s = all_preds_tab_flat[:, s].flatten().numpy()
-        targets_s = all_targets_tab_flat[:, s].flatten().numpy()
+        preds_s = all_preds_tab_flat[:, s].numpy()
+        targets_s = all_targets_tab_flat[:, s].numpy()
         
         logger.info(f"Generating confusion matrix for String {s+1}...")
         cm = confusion_matrix(targets_s, preds_s, labels=np.arange(num_classes))
-        target_names = [f'F{i}' for i in range(num_classes - 1)] + ['Silence']
         
-        plot_confusion_matrix(cm, target_names=target_names, title=f'String {s+1} Confusion Matrix - {config["model"]["name"]}')
+        plot_confusion_matrix(
+            cm, 
+            target_names=class_names, 
+            title=f'String {s+1} Confusion Matrix',
+            normalize=True # It's often better to see percentages
+        )
         save_path = os.path.join(eval_dir, f'confusion_matrix_string_{s+1}.png')
-        plt.savefig(save_path, bbox_inches='tight')
+        plt.savefig(save_path, bbox_inches='tight', dpi=300)
         plt.close()
-        logger.info(f"Plot for String {s+1} saved to {save_path}.")
+        logger.info(f"Plot for String {s+1} saved.")
     
-    logger.info("Analysis complete.")
+    logger.info("--- Error Analysis Finished ---")
+
 
 if __name__ == '__main__':
     parser = argparse.ArgumentParser(description="Error Analysis Script for Guitar Transcription Models")
-    parser.add_argument('--experiment_path', type=str, required=True, help="Full path to the experiment to be analyzed.")
+    parser.add_argument('experiment_path', type=str, help="Full path to the experiment directory to be analyzed.")
     args = parser.parse_args()
+    
+    # This script is now robust enough to be called from the command line
     analyze(args.experiment_path)

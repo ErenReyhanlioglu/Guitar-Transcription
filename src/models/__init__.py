@@ -1,5 +1,4 @@
 # src/models/__init__.py
-
 from typing import Type
 import torch.nn as nn
 import logging

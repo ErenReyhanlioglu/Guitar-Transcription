@@ -5,8 +5,8 @@ class GuitarProfile:
         self.config = instrument_config
         self.low = self.config['min_midi']
         self.high = self.config['max_midi']
-        
         self.num_pitches = self.config['num_frets'] + 1
+        self.num_strings = self.config['num_strings'] 
 
     def get_midi_tuning(self) -> list[int]:
         return self.config['tuning']

@@ -155,34 +155,61 @@ def logistic_to_tablature(preds_logistic, num_strings, num_classes, threshold=0.
     return fret_indices
 
 def tablature_to_stacked_multi_pitch(tablature, profile):
-    logger.debug(f"[tab_to_smp] Input tablature: {describe(tablature)}")
+    logger.debug(f"[tab_to_smp] Fonksiyon başlatıldı. Gelen tablature: {describe(tablature)}")
     is_tensor = isinstance(tablature, torch.Tensor)
-    if is_tensor:
-        if tablature.dim() == 2:
-            tablature = tablature.unsqueeze(0)
-    else: 
-        if tablature.ndim == 2:
-            tablature = np.expand_dims(tablature, axis=0)
+
+    # Fonksiyonun (..., Tel Sayısı, Zaman) formatında çalışmasını garantile
+    if tablature.shape[-1] < tablature.shape[-2]:
+        logger.debug(f"[tab_to_smp] Boyutlar (..., T, S) formatında. (..., S, T) formatına çevriliyor.")
+        tablature = tablature.transpose(-1, -2) if is_tensor else np.swapaxes(tablature, -1, -2)
+
+    # Batch boyutu ekle (eğer yoksa)
+    original_dims = tablature.dim() if is_tensor else tablature.ndim
+    if original_dims == 2:
+        tablature = tablature.unsqueeze(0) if is_tensor else np.expand_dims(tablature, axis=0)
+        logger.debug(f"[tab_to_smp] Batch boyutu eklendi. Yeni boyut: {describe(tablature)}")
+
     num_dofs, num_frames = tablature.shape[-2:]
     num_pitches = profile.get_range_len()
-    stacked_multi_pitch = np.zeros(tablature.shape[:-2] + (num_dofs, num_pitches, num_frames))
-    tuning = np.array(profile.get_midi_tuning())
-    dof_start = (tuning - profile.low)[np.newaxis, :, np.newaxis]
+    
+    logger.debug(f"[tab_to_smp] Parametreler: Tel={num_dofs}, Zaman={num_frames}, Pitch Sayısı={num_pitches}")
+
+    stacked_multi_pitch_shape = tablature.shape[:-2] + (num_dofs, num_pitches, num_frames)
+    
     if is_tensor:
-        dof_start = torch.Tensor(dof_start).to(tablature.device)
+        stacked_multi_pitch = torch.zeros(stacked_multi_pitch_shape, device=tablature.device)
+        dof_start = torch.tensor(profile.get_midi_tuning(), device=tablature.device) - profile.low
+        dof_start = dof_start[None, :, None] # Broadcasting için (1, S, 1) şekline getir
+    else:
+        stacked_multi_pitch = np.zeros(stacked_multi_pitch_shape)
+        tuning = np.array(profile.get_midi_tuning())
+        dof_start = (tuning - profile.low)[np.newaxis, :, np.newaxis]
+
+    logger.debug(f"[tab_to_smp] 'dof_start' (akort offset) tensörü oluşturuldu: {describe(dof_start)}")
+
     non_silent_frames = tablature >= 0
     pitch_idcs = (tablature + dof_start)[non_silent_frames]
-    non_silent_idcs = non_silent_frames.nonzero()
+    
+    non_silent_count = torch.sum(non_silent_frames).item() if is_tensor else np.sum(non_silent_frames)
+    logger.debug(f"[tab_to_smp] Toplam {non_silent_count} adet aktif (non-silent) nota bulundu.")
+
     if is_tensor:
         pitch_idcs = pitch_idcs.long()
-        non_silent_idcs = tuple(non_silent_idcs.transpose(-2, -1))
-        stacked_multi_pitch = torch.from_numpy(stacked_multi_pitch).to(tablature.device)
-        stacked_multi_pitch = stacked_multi_pitch.to(tablature.dtype)
+        batch_idcs, string_idcs, frame_idcs = non_silent_frames.nonzero(as_tuple=True)
+        stacked_multi_pitch[batch_idcs, string_idcs, pitch_idcs, frame_idcs] = 1
     else:
+        # Numpy için
+        non_silent_idcs = non_silent_frames.nonzero()
         pitch_idcs = pitch_idcs.astype(np.int64)
-    other_idcs, frame_idcs = non_silent_idcs[:-1], non_silent_idcs[-1]
-    stacked_multi_pitch[other_idcs + (pitch_idcs, frame_idcs)] = 1
-    logger.debug(f"[tab_to_smp] Returning stacked_multi_pitch: {describe(stacked_multi_pitch)}")
+        # batch, string, frame indeksleri
+        other_idcs = non_silent_idcs[:-1]
+        frame_idcs = non_silent_idcs[-1]
+        stacked_multi_pitch[other_idcs + (pitch_idcs, frame_idcs)] = 1
+    
+    if original_dims == 2:
+        stacked_multi_pitch = stacked_multi_pitch.squeeze(0)
+
+    logger.debug(f"[tab_to_smp] Fonksiyon tamamlandı. Dönen stacked_multi_pitch: {describe(stacked_multi_pitch)}")
     return stacked_multi_pitch
 
 def stacked_multi_pitch_to_multi_pitch(stacked_multi_pitch):

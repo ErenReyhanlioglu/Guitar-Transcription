@@ -1,6 +1,6 @@
 # ------------------ General Project Information ------------------
 project_name: "Automatic_Guitar_Transcription"
-experiment_name: "FretNet_GuitarSet_LogisticBank_Inhibition"
+experiment_name: "FretNet_GuitarSet"
 
 # ------------------ Dataset and Feature Definitions ------------------
 dataset: "GuitarSet" # "GuitarSet" or "SynthTab"
@@ -35,9 +35,12 @@ data:
 
 # ------------------ Model Selection and Parameters ------------------
 model:
-  name: "FretNet" # "TabCNN", "FretNet", "Transformer"
+  name: "FretNet"
   params:
-    predict_onsets: false # Set to 'true' for onset detection experiments
+    use_projection_layer: true    # Activates the projection layers for smart feature fusion.
+    projection_output_size: 256 # The common dimension to project HCQT and Mel features into.
+    
+    use_auxiliary_head: true      # Activates the second output head for multipitch prediction.
     
     rnn_hidden_size: 128
     rnn_num_layers: 2
@@ -55,28 +58,48 @@ instrument:
 
 # ------------------ Loss Function Settings ------------------
 loss:
-  active_loss: "softmax_groups" # "softmax_groups" or "logistic_bank" 
-
-  use_focal: True               
-  focal_gamma: 2.50             
-  use_class_weights: true       
-  class_weights_silence_factor: 0.6 
+  active_loss: "softmax_groups" # "softmax_groups" or "logistic_bank"
 
   configurations:
     softmax_groups:
-      {}
+      type: "CustomSoftmaxTablatureLoss" # "CrossEntropyLoss" or "CustomSoftmaxTablatureLoss"
+      use_focal: true
+      focal_params:
+        gamma: 2.0
+      use_class_weights: true
+      class_weights_params:
+        silence_factor: 0.6
 
     logistic_bank:
-      lmbda: 0.01       
-      focal_alpha: 0.75   
-      
+      type: "CustomLogisticTablatureLoss" # "BCEWithLogitsLoss" or "CustomLogisticTablatureLoss"
+      lmbda: 0.01
+      use_focal: true
+      focal_params:
+        gamma: 2.5
+        alpha: 0.75 
+
+  auxiliary_loss:
+    enabled: true
+    type: "BCEWithLogitsLoss"
+    weight: 0.4        
+
 # ------------------ Training Parameters ------------------
 training:
   optimizer:
-    active_optimizer: "Adam"
+    active_optimizer: "AdamW" 
     configurations:
-      Adam: {params: {lr: 0.0005}}
-      AdamW: {params: {lr: 0.0001, weight_decay: 0.01}}
+      Adam: 
+        differential_lr: true
+        params:
+          backbone_lr: 0.0001 # lr for CNN
+          head_lr: 0.0005 # lr for RNN
+          weight_decay: 0.0
+      AdamW:
+        differential_lr: true
+        params:
+          backbone_lr: 0.0001 # lr for CNN
+          head_lr: 0.0005 # lr for RNN
+          weight_decay: 0.01
       
   scheduler:
     active_scheduler: "ReduceLROnPlateau" # "ReduceLROnPlateau", "StepLR", or "none"
@@ -98,7 +121,7 @@ training:
 # ------------------ Post-Processing Settings ------------------
 post_processing:
   min_duration_frames: 0 # Short note filter (0 = disabled)
-  prediction_threshold: 0.3 # Probability threshold for LogisticBank
+  prediction_threshold: 0.3 # Probability threshold 
   
 # ------------------ Evaluation Metrics Settings ------------------
 metrics:
@@ -118,11 +141,11 @@ logging_and_checkpointing:
   # ------------------------------------------------------------------------------------
   log_levels:
     __main__: "INFO"
-    src.trainer: "INFO"
+    src.trainer: "DEBUG" 
     src.data_loader: "INFO" 
-    src.utils.losses: "INFO"
+    src.models.fretnet: "DEBUG"
+    src.utils.losses: "DEBUG" 
     src.utils.metrics: "INFO"
     src.utils.agt_tools: "INFO"
     src.utils.experiment: "INFO"
-    src.utils.analyze_errors: "INFO"
-    src.models.fretnet: "INFO"
+    src.utils.analyze_errors: "INFO" 

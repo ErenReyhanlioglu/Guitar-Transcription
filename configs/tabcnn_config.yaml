@@ -1,6 +1,6 @@
 # ------------------ General Project Information ------------------
 project_name: "Automatic_Guitar_Transcription"
-experiment_name: "TabCNN_GuitarSet_LogisticBank_v1"
+experiment_name: "TabCNN_GuitarSet_LogisticBank_v2"
 
 # ------------------ Dataset and Feature Definitions ------------------
 dataset: "GuitarSet" # "GuitarSet" or "SynthTab"
@@ -19,12 +19,13 @@ feature_definitions:
 
 # ------------------ Data Loading and Processing Parameters ------------------
 data:
-  active_preparation_mode: "framify" # TabCNN requires 'framify'
+  active_preparation_mode: "framify" # 'framify' for TabCNN, 'windowing' for FretNet/Transformer
   configurations:
     windowing: {window_size: 200}
     framify: {framify_window_size: 9}
   
-  active_features: ["hcqt", "mel"]
+  active_features: ["hcqt", "mel"]  
+  target_keys: ["tablature"]
   batch_size: 4
   num_workers: 2
   validation_split_size: 0.2
@@ -36,48 +37,69 @@ data:
 model:
   name: "TabCNN"
   params:
-    predict_onsets: false
+    use_projection_layer: true    # Activates the projection layers for smart feature fusion.
+    projection_output_size: 256 # The common dimension to project HCQT and Mel features into.
 
 # ------------------ Instrument Properties (Single Source of Truth) ------------------
 instrument:
   tuning: [40, 45, 50, 55, 59, 64]
-  min_midi: 40    
-  max_midi: 88    
-  num_frets: 19 
+  min_midi: 40  
+  max_midi: 88  
+  num_frets: 19
   num_strings: 6
 
 # ------------------ Loss Function Settings ------------------
 loss:
-  active_loss: "softmax_groups" # "softmax_groups" or "logistic_bank" 
-
-  use_focal: true                 
-  focal_gamma: 2.5                
-  use_class_weights: true         
-  class_weights_silence_factor: 0.75 
+  active_loss: "softmax_groups" # "softmax_groups" or "logistic_bank"
 
   configurations:
     softmax_groups:
-      {}
+      type: "CustomSoftmaxTablatureLoss" # "CrossEntropyLoss" or "CustomSoftmaxTablatureLoss"
+      use_focal: true
+      focal_params:
+        gamma: 2.0
+      use_class_weights: true
+      class_weights_params:
+        silence_factor: 0.6
 
     logistic_bank:
-      lmbda: 1.0          
-      focal_alpha: 0.25   
+      type: "CustomLogisticTablatureLoss" # "BCEWithLogitsLoss" or "CustomLogisticTablatureLoss"
+      lmbda: 0.01
+      use_focal: true
+      focal_params:
+        gamma: 2.5
+        alpha: 0.75  
+
+  auxiliary_loss:
+    enabled: True
+    type: "BCEWithLogitsLoss"
+    weight: 0.4    
 
 # ------------------ Training Parameters ------------------
 training:
   optimizer:
-    active_optimizer: "AdamW"
+    active_optimizer: "AdamW" 
     configurations:
-      Adam: {params: {lr: 0.0001}}
-      AdamW: {params: {lr: 0.0001, weight_decay: 0.01}}
+      Adam: 
+        differential_lr: true
+        params:
+          backbone_lr: 0.0001 
+          head_lr: 0.0005 
+          weight_decay: 0.0
+      AdamW:
+        differential_lr: true
+        params:
+          backbone_lr: 0.0001 
+          head_lr: 0.0005 
+          weight_decay: 0.01
       
   scheduler:
-    active_scheduler: "ReduceLROnPlateau"
+    active_scheduler: "ReduceLROnPlateau" # "ReduceLROnPlateau", "StepLR", or "none"
     configurations:
       ReduceLROnPlateau: {params: {monitor: "val_tab_f1", mode: "max", factor: 0.2, patience: 5, min_lr: 1.0e-6}}
       StepLR: {params: {step_size: 10, gamma: 0.5}}
       
-  epochs: 100
+  epochs: 150
   device: "cuda"
   use_mixed_precision: true
   
@@ -90,19 +112,19 @@ training:
 
 # ------------------ Post-Processing Settings ------------------
 post_processing:
-  min_duration_frames: 0
-  prediction_threshold: 0.5
+  min_duration_frames: 0 # Short note filter (0 = disabled)
+  prediction_threshold: 0.3 # Probability threshold  
   
 # ------------------ Evaluation Metrics Settings ------------------
 metrics:
-  include_silence: False
+  include_silence: True # Include/exclude silence class in metrics
 
 # ------------------ Logging and Checkpoint Settings ------------------
 logging_and_checkpointing:
   use_tensorboard: True
   resume_from_checkpoint: null
   log_epoch_summary: True
-  
+
   # ------------------------------------------------------------------------------------
   # This section allows for granular control over log verbosity for each part of the project.
   # The hierarchy is: DEBUG > INFO > WARNING > ERROR > CRITICAL.
@@ -111,11 +133,11 @@ logging_and_checkpointing:
   # ------------------------------------------------------------------------------------
   log_levels:
     __main__: "INFO"
-    src.trainer: "DEBUG"
-    src.data_loader: "DEGUB"
-    src.utils.losses: "DEBUG"
+    src.trainer: "DEBUG"  
+    src.data_loader: "INFO"  
+    src.models.tabcnn: "DEBUG"
+    src.utils.losses: "DEBUG"  
     src.utils.metrics: "INFO"
-    src.utils.agt_tools: "DEBUG"
+    src.utils.agt_tools: "INFO"
     src.utils.experiment: "INFO"
     src.utils.analyze_errors: "INFO"
-    src.models.tabcnn: "DEBUG"      

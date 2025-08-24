@@ -120,10 +120,10 @@ def plot_pianoroll(pianoroll, hop_seconds, save_path, title='Piano Roll', low_mi
 def plot_guitar_tablature(tab_data, hop_seconds, save_path, title='Guitar Tablature'):
     """
     Plots guitar tablature, showing fret numbers on string lines.
-    `tab_data` is a 2D numpy array (6 x num_frames) where values are fret numbers (-1 for silence).
+    `tab_data` is a 2D numpy array (num_frames x 6) where values are fret numbers (-1 for silence).
     """
     fig, ax = plt.subplots(figsize=(15, 6))
-    num_strings, num_frames = tab_data.shape
+    num_frames, num_strings = tab_data.shape
     duration_seconds = num_frames * hop_seconds
     
     for i in range(num_strings):
@@ -133,7 +133,10 @@ def plot_guitar_tablature(tab_data, hop_seconds, save_path, title='Guitar Tablat
         is_note_active = False
         onset_frame = 0
         active_fret = -1
-        for frame_idx, fret in enumerate(tab_data[string_idx]):
+        
+        string_data = tab_data[:, string_idx] 
+        
+        for frame_idx, fret in enumerate(string_data):
             current_fret = int(fret)
             if current_fret != -1 and not is_note_active:
                 is_note_active = True
