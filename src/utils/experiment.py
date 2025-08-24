@@ -98,8 +98,9 @@ def generate_experiment_report(model: torch.nn.Module, history: dict, val_loader
     tab_charts_path = os.path.join(charts_path, "tablature")
     mp_charts_path = os.path.join(charts_path, "multi_pitch")
     octave_charts_path = os.path.join(charts_path, "octave_tolerated")
+    error_charts_path = os.path.join(charts_path, "errors")
     
-    for path in [charts_path, sample_path, loss_charts_path, tab_charts_path, mp_charts_path, octave_charts_path]:
+    for path in [charts_path, sample_path, loss_charts_path, tab_charts_path, mp_charts_path, octave_charts_path, error_charts_path]:
         os.makedirs(path, exist_ok=True)
     
     aux_used = 'train_loss_aux' in history and any(val > 1e-9 for val in history['train_loss_aux'])
@@ -117,25 +118,51 @@ def generate_experiment_report(model: torch.nn.Module, history: dict, val_loader
         plot_metrics_custom(history, 'val_loss_total', 'train_loss_total', 'Total Loss', 
                             os.path.join(loss_charts_path, "loss_curve.png"))
 
-    metric_groups = {
-        'tab': ('Tablature', tab_charts_path),
-        'mp': ('Multi-pitch', mp_charts_path),
-        'octave': ('Octave Tolerant', octave_charts_path)
-    }
-
-    for prefix, (title_prefix, save_dir) in metric_groups.items():
-        if f'val_{prefix}_f1' in history and any(history[f'val_{prefix}_f1']):
-            logger.info(f"Generating plots for {title_prefix} metrics (Weighted)...")
-            plot_metrics_custom(history, f'val_{prefix}_f1', f'train_{prefix}_f1', f'{title_prefix} F1 Score (Weighted)', os.path.join(save_dir, "f1_score_curve_weighted.png"))
-            plot_metrics_custom(history, f'val_{prefix}_precision', f'train_{prefix}_precision', f'{title_prefix} Precision (Weighted)', os.path.join(save_dir, "precision_curve_weighted.png"))
-            plot_metrics_custom(history, f'val_{prefix}_recall', f'train_{prefix}_recall', f'{title_prefix} Recall (Weighted)', os.path.join(save_dir, "recall_curve_weighted.png"))
+    plot_jobs = [
+        # Tablature Weighted
+        {'key': 'tab_f1', 'title': 'Tablature F1 Score (Weighted)', 'dir': tab_charts_path, 'file': 'f1_score_curve_weighted.png'},
+        {'key': 'tab_precision', 'title': 'Tablature Precision (Weighted)', 'dir': tab_charts_path, 'file': 'precision_curve_weighted.png'},
+        {'key': 'tab_recall', 'title': 'Tablature Recall (Weighted)', 'dir': tab_charts_path, 'file': 'recall_curve_weighted.png'},
+        # Tablature Macro
+        {'key': 'tab_f1_macro', 'title': 'Tablature F1 Score (Macro)', 'dir': tab_charts_path, 'file': 'f1_score_curve_macro.png'},
+        {'key': 'tab_precision_macro', 'title': 'Tablature Precision (Macro)', 'dir': tab_charts_path, 'file': 'precision_curve_macro.png'},
+        {'key': 'tab_recall_macro', 'title': 'Tablature Recall (Macro)', 'dir': tab_charts_path, 'file': 'recall_curve_macro.png'},
         
-        if f'val_{prefix}_f1_macro' in history and any(history[f'val_{prefix}_f1_macro']):
-            logger.info(f"Generating plots for {title_prefix} metrics (Macro)...")
-            plot_metrics_custom(history, f'val_{prefix}_f1_macro', f'train_{prefix}_f1_macro', f'{title_prefix} F1 Score (Macro)', os.path.join(save_dir, "f1_score_curve_macro.png"))
-            plot_metrics_custom(history, f'val_{prefix}_precision_macro', f'train_{prefix}_precision_macro', f'{title_prefix} Precision (Macro)', os.path.join(save_dir, "precision_curve_macro.png"))
-            plot_metrics_custom(history, f'val_{prefix}_recall_macro', f'train_{prefix}_recall_macro', f'{title_prefix} Recall (Macro)', os.path.join(save_dir, "recall_curve_macro.png"))
-            
+        # Multi-pitch
+        {'key': 'mp_f1', 'title': 'Multi-pitch F1 Score', 'dir': mp_charts_path, 'file': 'f1_score_curve.png'},
+        {'key': 'mp_precision', 'title': 'Multi-pitch Precision', 'dir': mp_charts_path, 'file': 'precision_curve.png'},
+        {'key': 'mp_recall', 'title': 'Multi-pitch Recall', 'dir': mp_charts_path, 'file': 'recall_curve.png'},
+
+        # Octave Tolerant Weighted
+        {'key': 'octave_f1', 'title': 'Octave Tolerant F1 (Weighted)', 'dir': octave_charts_path, 'file': 'f1_score_curve_weighted.png'},
+        {'key': 'octave_precision', 'title': 'Octave Tolerant Precision (Weighted)', 'dir': octave_charts_path, 'file': 'precision_curve_weighted.png'},
+        {'key': 'octave_recall', 'title': 'Octave Tolerant Recall (Weighted)', 'dir': octave_charts_path, 'file': 'recall_curve_weighted.png'},
+        # Octave Tolerant Macro
+        {'key': 'octave_f1_macro', 'title': 'Octave Tolerant F1 (Macro)', 'dir': octave_charts_path, 'file': 'f1_score_curve_macro.png'},
+        {'key': 'octave_precision_macro', 'title': 'Octave Tolerant Precision (Macro)', 'dir': octave_charts_path, 'file': 'precision_curve_macro.png'},
+        {'key': 'octave_recall_macro', 'title': 'Octave Tolerant Recall (Macro)', 'dir': octave_charts_path, 'file': 'recall_curve_macro.png'},
+
+        # Error Scores
+        {'key': 'tab_error_total', 'title': 'Total Error Rate', 'dir': error_charts_path, 'file': 'error_total_curve.png'},
+        {'key': 'tab_error_substitution', 'title': 'Substitution Error Rate', 'dir': error_charts_path, 'file': 'error_substitution_curve.png'},
+        {'key': 'tab_error_miss', 'title': 'Miss Error Rate', 'dir': error_charts_path, 'file': 'error_miss_curve.png'},
+        {'key': 'tab_error_false_alarm', 'title': 'False Alarm Error Rate', 'dir': error_charts_path, 'file': 'error_false_alarm_curve.png'},
+    ]
+
+    logger.info("Generating all metric plots...")
+    for job in plot_jobs:
+        val_key = f"val_{job['key']}"
+        train_key = f"train_{job['key']}"
+        
+        if val_key in history and train_key in history and any(history[val_key]):
+            plot_metrics_custom(
+                history=history,
+                val_metric_key=val_key,
+                train_metric_key=train_key,
+                plot_title=job['title'],
+                save_path=os.path.join(job['dir'], job['file'])
+            )
+
     logger.info("All history plots have been saved.")
 
     logger.info("Generating a sample batch for visual comparison...")

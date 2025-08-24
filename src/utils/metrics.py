@@ -158,6 +158,64 @@ def compute_octave_tolerant_metrics(preds_tab, targets_tab, tuning, silence_clas
     return {'octave_precision': p_w, 'octave_recall': r_w, 'octave_f1': f1_w,
             'octave_precision_macro': p_m, 'octave_recall_macro': r_m, 'octave_f1_macro': f1_m}
 
+def compute_tablature_error_scores(preds_flat, targets_flat, silence_class):
+    """
+    Calculates frame-wise tablature error scores based on predictions and targets.
+    All inputs are expected to be 1D NumPy arrays of fret numbers.
+    - Substitution: A non-silent note was predicted as a different non-silent note.
+    - Miss: A non-silent note was predicted as silence.
+    - False Alarm: A silence was predicted as a non-silent note.
+    """
+    logger.debug(f"[error_scores] Computing error scores...")
+    
+    # Ensure inputs are NumPy arrays, not Tensors
+    if isinstance(preds_flat, torch.Tensor):
+        preds_flat = preds_flat.cpu().numpy()
+    if isinstance(targets_flat, torch.Tensor):
+        targets_flat = targets_flat.cpu().numpy()
+
+    # Total number of active (non-silent) frames in the ground truth
+    n_ref = np.sum(targets_flat != silence_class)
+
+    if n_ref == 0:
+        n_est = np.sum(preds_flat != silence_class)
+        e_fa = n_est / (n_est + 1e-9) 
+        return {
+            'tab_error_substitution': 0.0,
+            'tab_error_miss': 0.0,
+            'tab_error_false_alarm': e_fa,
+            'tab_error_total': e_fa
+        }
+
+    # 1. Miss Error: A note was present (target != silence), but silence was predicted.
+    miss_error_frames = np.sum((targets_flat != silence_class) & (preds_flat == silence_class))
+    
+    # 2. False Alarm Error: Silence was present (target == silence), but a note was predicted.
+    false_alarm_frames = np.sum((targets_flat == silence_class) & (preds_flat != silence_class))
+    
+    # 3. Substitution Error: A note was present, and a DIFFERENT non-silent note was predicted.
+    substitution_error_frames = np.sum(
+        (targets_flat != silence_class) & 
+        (preds_flat != silence_class) & 
+        (targets_flat != preds_flat)
+    )
+
+    e_sub = substitution_error_frames / n_ref
+    e_miss = miss_error_frames / n_ref
+    e_fa = false_alarm_frames / n_ref
+    
+    e_tot = e_sub + e_miss + e_fa
+
+    results = {
+        'tab_error_substitution': e_sub,
+        'tab_error_miss': e_miss,
+        'tab_error_false_alarm': e_fa,
+        'tab_error_total': e_tot
+    }
+    
+    logger.debug(f"[error_scores] Returning results: {results}")
+    return results
+
 def compute_per_string_class_weights(
     npz_path_list: list[str], 
     num_strings: int, 
