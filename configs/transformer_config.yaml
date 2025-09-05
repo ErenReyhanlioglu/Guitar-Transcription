@@ -3,14 +3,21 @@ project_name: "Automatic_Guitar_Transcription"
 experiment_name: "Transformer_GuitarSet_LogisticBank_v2"
 
 # ------------------ Dataset and Feature Definitions ------------------
-dataset: "GuitarSet" # "GuitarSet" or "SynthTab"
+dataset: "SynthTab" # "GuitarSet" or "SynthTab"
 dataset_configs:
   GuitarSet:
     drive_data_path: "/content/drive/MyDrive/Automatic Guitar Transcription/feature_extraction/segments_500frames_most_active_perfect/"
     local_data_path: "/content/local_guitarset_data/"
+    feature_to_file_map:
+      hcqt: "hcqt.npy"
+      mel: "mel.npy"  
+
   SynthTab:
     drive_data_path: "/content/drive/MyDrive/Automatic Guitar Transcription/feature_extraction/synthtab_all_npz/most_active_frames/"
     local_data_path: "/content/local_synthtab_data/"
+    feature_to_file_map:
+      hcqt: "hcqt.npy"
+      mel: "melspec.npy"
 
 feature_definitions:
   cqt: {key: "cqt", in_channels: 1, num_freq: 144}
@@ -21,7 +28,7 @@ feature_definitions:
 data:
   active_preparation_mode: "windowing" # 'framify' for TabCNN, 'windowing' for FretNet/Transformer
   configurations:
-    windowing: {window_size: 200}
+    windowing: {window_size: 250}
     framify: {framify_window_size: 9}
   
   active_features: ["hcqt", "mel"]  
@@ -37,12 +44,17 @@ data:
 model:
   name: "Transformer"
   params:
-    predict_onsets: false
+    use_projection_layer: true    # Activates the projection layers for smart feature fusion.
+    projection_output_size: 256 # The common dimension to project HCQT and Mel features into.
+    
+    use_auxiliary_head: true      # Activates the second output head for multipitch prediction.
+    
+    rnn_hidden_size: 128
+    rnn_num_layers: 2
     d_model: 256
     n_head: 8
     num_encoder_layers: 6
-    dim_feedforward: 1024
-    dropout: 0.1
+    dropout: 0.2
 
 # ------------------ Instrument Properties (Single Source of Truth) ------------------
 instrument:
@@ -61,7 +73,7 @@ loss:
       type: "CustomSoftmaxTablatureLoss" # "CrossEntropyLoss" or "CustomSoftmaxTablatureLoss"
       use_focal: true
       focal_params:
-        gamma: 2.0
+        gamma: 2.25
       use_class_weights: true
       class_weights_params:
         silence_factor: 0.6
@@ -72,33 +84,35 @@ loss:
       use_focal: true
       focal_params:
         gamma: 2.5
-        alpha: 0.75  
+        alpha: 0.75 
 
   auxiliary_loss:
-    enabled: false
+    enabled: true
     type: "BCEWithLogitsLoss"
-    weight: 0.4    
+    weight: 0.4      
 
 # ------------------ Training Parameters ------------------
 training:
   optimizer:
-    active_optimizer: "AdamW"  
+    active_optimizer: "AdamW" 
     configurations:
-      Adam:  
-        differential_lr: false
+      Adam: 
+        differential_lr: true
         params:
-          lr: 0.0001
+          backbone_lr: 0.0001 
+          head_lr: 0.0002 
           weight_decay: 0.0
       AdamW:
-        differential_lr: false
+        differential_lr: true
         params:
-          lr: 0.0001
+          backbone_lr: 0.0001 
+          head_lr: 0.0002 
           weight_decay: 0.01
       
   scheduler:
     active_scheduler: "ReduceLROnPlateau" # "ReduceLROnPlateau", "StepLR", or "none"
     configurations:
-      ReduceLROnPlateau: {params: {monitor: "val_tab_f1", mode: "max", factor: 0.2, patience: 5, min_lr: 1.0e-6}}
+      ReduceLROnPlateau: {params: {monitor: "val_tab_f1_macro", mode: "max", factor: 0.2, patience: 5, min_lr: 1.0e-6}}
       StepLR: {params: {step_size: 10, gamma: 0.5}}
       
   epochs: 150
@@ -107,7 +121,7 @@ training:
   
   early_stopping:
     enabled: true
-    monitor: "val_tab_f1"
+    monitor: "val_tab_f1_macro"
     patience: 10
     min_delta: 0.0001
     mode: "max"
@@ -137,9 +151,9 @@ logging_and_checkpointing:
     __main__: "INFO"
     src.trainer: "DEBUG"
     src.data_loader: "INFO"
-    src.models.transformer: "DEBUG"
-    src.utils.losses: "DEBUG"
-    src.utils.metrics: "DEBUG"
+    src.models.transformer: "INFO"
+    src.utils.losses: "INFO"
+    src.utils.metrics: "INFO"
     src.utils.agt_tools: "INFO"
     src.utils.experiment: "INFO"
     src.utils.analyze_errors: "INFO"

@@ -6,11 +6,6 @@ import logging
 logger = logging.getLogger(__name__)
 
 def process_config(config: dict) -> dict:
-    """
-    Ham konfigürasyon sözlüğünü işler, türetilmiş parametreleri ayarlar
-    ve eğitim süreci için hazır hale getirir. Bu versiyon, iç içe geçmiş
-    'configurations' anahtarlarını doğru bir şekilde yönetir.
-    """
     active_dataset = config['dataset']
     logger.info(f"Active dataset selected: '{active_dataset}'")
     config['data'].update(config['dataset_configs'][active_dataset])
@@ -19,11 +14,10 @@ def process_config(config: dict) -> dict:
     prep_mode_params = config['data']['configurations'][active_prep_mode]
     logger.info(f"Active data preparation mode: '{active_prep_mode}' with {prep_mode_params}")
     config['data'].update(prep_mode_params)
+    if 'configurations' in config['data']:
+        del config['data']['configurations']
 
-    active_loss_name = config['loss']['active_loss']
-    loss_params = config['loss']['configurations'][active_loss_name]
-    logger.info(f"Active primary loss configuration set to '{active_loss_name}' with {loss_params}")
-    config['loss'].update(loss_params)
+    logger.info(f"Loss configuration will be handled by the CombinedLoss class based on 'active_loss': {config['loss']['active_loss']}")
 
     if 'active_features' not in config['data']:
         raise ValueError("'data.active_features' listesi config dosyasında bulunamadı.")
@@ -34,30 +28,23 @@ def process_config(config: dict) -> dict:
             raise ValueError(f"Aktif özellik '{feature}', 'feature_definitions' içinde tanımlanmamış.")
 
     num_frets = config['instrument']['num_frets']
-    silence_class_idx = num_frets + 1  # 0-19 frets, 20. index "no-note"
-    total_model_classes = num_frets + 2 # 0-19 ffrest + "no-note" + "out-of-range" 
 
-    config['data']['silence_class'] = silence_class_idx
-    config['data']['num_classes'] = total_model_classes
+    total_model_classes = num_frets + 2
+    silence_class_idx = num_frets + 1
+
+    config['instrument']['silence_class'] = silence_class_idx
     if 'params' not in config['model']:
         config['model']['params'] = {}
     config['model']['params']['num_classes'] = total_model_classes
     config['model']['params']['num_strings'] = config['instrument']['num_strings']
-
-    if 'configurations' in config['data']:
-        del config['data']['configurations']
-    if 'configurations' in config['loss']:
-        del config['loss']['configurations']
+    
+    logger.info(f"Class configuration updated: Total classes per string = {total_model_classes}, Silence class index = {silence_class_idx}")
     
     logger.info("Config processing complete.")
     return config
 
 
 def get_optimizer(model: torch.nn.Module, config: dict) -> torch.optim.Optimizer:
-    """
-    Config dosyasına göre optimizer'ı başlatır.
-    Diferansiyel öğrenme oranını (differential_lr) destekler.
-    """
     optimizer_config = config['training']['optimizer']
     optimizer_name = optimizer_config['active_optimizer']
     opt_spec_config = optimizer_config['configurations'][optimizer_name]
@@ -94,7 +81,6 @@ def get_optimizer(model: torch.nn.Module, config: dict) -> torch.optim.Optimizer
 
 
 def get_scheduler(optimizer: torch.optim.Optimizer, config: dict):
-    """Config dosyasına göre learning rate scheduler'ını başlatır."""
     scheduler_config = config['training'].get('scheduler')
     if not scheduler_config:
         return None

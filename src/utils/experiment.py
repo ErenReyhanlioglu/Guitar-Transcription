@@ -17,7 +17,7 @@ if str(PROJECT_ROOT_PATH) not in sys.path:
 from src.utils.logger import describe
 from src.utils.plotting import (
     plot_loss_curves, plot_metrics_custom, plot_spectrogram,
-    plot_guitar_tablature, plot_pianoroll
+    plot_guitar_tablature, plot_pianoroll, plot_binary_activation
 )
 from src.utils.agt_tools import tablature_to_stacked_multi_pitch, stacked_multi_pitch_to_multi_pitch, logistic_to_tablature
 from src.utils.guitar_profile import GuitarProfile
@@ -56,6 +56,7 @@ def create_experiment_directory(base_output_path: str, model_name: str, config: 
     return experiment_path
 
 def save_model_summary(model, config, experiment_path):
+    """Saves a summary of the model architecture and parameter counts."""
     summary_path = os.path.join(experiment_path, "model_summary.txt")
     try:
         s = io.StringIO()
@@ -68,28 +69,29 @@ def save_model_summary(model, config, experiment_path):
         
         with open(summary_path, "w") as f:
             f.write("MODEL ARCHITECTURE:\n" + "="*20 + "\n" + model_architecture + "\n\n")
-            f.write("PARAMETER COUNT:\n" + "="*20 + "\n")
+            f.write("OVERALL PARAMETER COUNT:\n" + "="*20 + "\n")
             f.write(f"Total params: {total_params:,}\n")
             f.write(f"Trainable params: {trainable_params:,}\n")
-        logger.info(f"Simple model summary saved to {summary_path}")
+
+            if hasattr(model, 'backbone') and hasattr(model, 'head'):
+                f.write("\nPARAMETER COUNT BY COMPONENT:\n" + "="*30 + "\n")
+                
+                backbone_params = sum(p.numel() for p in model.backbone.parameters())
+                head_params = sum(p.numel() for p in model.head.parameters())
+                
+                f.write(f"Backbone params: {backbone_params:,} ({backbone_params/total_params:.2%})\n")
+                f.write(f"Head params: {head_params:,} ({head_params/total_params:.2%})\n")
+                
+        logger.info(f"Model summary with component breakdown saved to {summary_path}")
+
     except Exception as e:
         logger.error(f"Could not generate model summary. Error: {e}", exc_info=True)
 
-import torch
-import os
-import logging
-from src.utils.plotting import (
-    plot_metrics_custom, plot_spectrogram,
-    plot_guitar_tablature, plot_pianoroll
-)
-from src.utils.agt_tools import tablature_to_stacked_multi_pitch, stacked_multi_pitch_to_multi_pitch, logistic_to_tablature
-from src.utils.guitar_profile import GuitarProfile
-from src.utils.logger import describe
-
-logger = logging.getLogger(__name__)
-
 def generate_experiment_report(model: torch.nn.Module, history: dict, val_loader: torch.utils.data.DataLoader, 
-                              config: dict, experiment_path: str, device: torch.device, profile: GuitarProfile):
+                             config: dict, experiment_path: str, device: torch.device, profile: GuitarProfile):
+    """
+    Generates a comprehensive report with plots and sample predictions after training.
+    """
     logger.info("--- Generating Final Experiment Report ---")
 
     charts_path = os.path.join(experiment_path, "charts")
@@ -103,20 +105,21 @@ def generate_experiment_report(model: torch.nn.Module, history: dict, val_loader
     for path in [charts_path, sample_path, loss_charts_path, tab_charts_path, mp_charts_path, octave_charts_path, error_charts_path]:
         os.makedirs(path, exist_ok=True)
     
-    aux_used = 'train_loss_aux' in history and any(val > 1e-9 for val in history['train_loss_aux'])
-
-    if aux_used:
-        logger.info("Plotting all loss components...")
-        plot_metrics_custom(history, 'val_loss_total', 'train_loss_total', 'Total Loss', 
-                            os.path.join(loss_charts_path, "total_loss_curve.png"))
-        plot_metrics_custom(history, 'val_loss_primary', 'train_loss_primary', 'Primary (Tablature) Loss', 
-                            os.path.join(loss_charts_path, "primary_loss_curve.png"))
+    logger.info("Plotting all available loss components...")
+    plot_metrics_custom(history, 'val_loss_total', 'train_loss_total', 'Total Loss', 
+                        os.path.join(loss_charts_path, "total_loss_curve.png"))
+    plot_metrics_custom(history, 'val_loss_primary', 'train_loss_primary', 'Primary (Tablature) Loss', 
+                        os.path.join(loss_charts_path, "primary_loss_curve.png"))
+    
+    if 'train_loss_aux' in history and any(val > 1e-9 for val in history['train_loss_aux']):
         plot_metrics_custom(history, 'val_loss_aux', 'train_loss_aux', 'Auxiliary (Multipitch) Loss', 
                             os.path.join(loss_charts_path, "auxiliary_loss_curve.png"))
-    else:
-        logger.info("Plotting total loss...")
-        plot_metrics_custom(history, 'val_loss_total', 'train_loss_total', 'Total Loss', 
-                            os.path.join(loss_charts_path, "loss_curve.png"))
+    if 'train_loss_onset' in history and any(val > 1e-9 for val in history['train_loss_onset']):
+        plot_metrics_custom(history, 'val_loss_onset', 'train_loss_onset', 'Onset Loss', 
+                            os.path.join(loss_charts_path, "onset_loss_curve.png"))
+    if 'train_loss_offset' in history and any(val > 1e-9 for val in history['train_loss_offset']):
+        plot_metrics_custom(history, 'val_loss_offset', 'train_loss_offset', 'Offset Loss', 
+                            os.path.join(loss_charts_path, "offset_loss_curve.png"))
 
     plot_jobs = [
         # Tablature Weighted
@@ -148,21 +151,11 @@ def generate_experiment_report(model: torch.nn.Module, history: dict, val_loader
         {'key': 'tab_error_miss', 'title': 'Miss Error Rate', 'dir': error_charts_path, 'file': 'error_miss_curve.png'},
         {'key': 'tab_error_false_alarm', 'title': 'False Alarm Error Rate', 'dir': error_charts_path, 'file': 'error_false_alarm_curve.png'},
     ]
-
     logger.info("Generating all metric plots...")
     for job in plot_jobs:
-        val_key = f"val_{job['key']}"
-        train_key = f"train_{job['key']}"
-        
+        val_key, train_key = f"val_{job['key']}", f"train_{job['key']}"
         if val_key in history and train_key in history and any(history[val_key]):
-            plot_metrics_custom(
-                history=history,
-                val_metric_key=val_key,
-                train_metric_key=train_key,
-                plot_title=job['title'],
-                save_path=os.path.join(job['dir'], job['file'])
-            )
-
+            plot_metrics_custom(history, val_key, train_key, job['title'], os.path.join(job['dir'], job['file']))
     logger.info("All history plots have been saved.")
 
     logger.info("Generating a sample batch for visual comparison...")
@@ -174,71 +167,98 @@ def generate_experiment_report(model: torch.nn.Module, history: dict, val_loader
 
     data_config = config['data']
     hop_seconds = data_config['hop_length'] / data_config['sample_rate']
-    
     for feature_key, tensor in sample_batch['features'].items():
         spec_to_plot = tensor[0][0].cpu().numpy()
         save_path = os.path.join(sample_path, f"sample_spectrogram_{feature_key}.png")
         plot_spectrogram(spec_to_plot, hop_seconds=hop_seconds, save_path=save_path, title=f"Sample Spectrogram ({feature_key.upper()})")
-        logger.info(f"Spectrogram for '{feature_key}' saved to {save_path}")
-
+    
     model.eval()
     with torch.no_grad():
         features_dict = {key: tensor.to(device) for key, tensor in sample_batch['features'].items()}
         model_output = model(**features_dict)
         
-        aux_enabled = config.get('loss', {}).get('auxiliary_loss', {}).get('enabled', False)
-        tab_logits = model_output[0] if aux_enabled else model_output
+        tab_logits = model_output.get('tab_logits')
+        onset_logits = model_output.get('onset_logits')
+        offset_logits = model_output.get('offset_logits')
         
-        S = config['instrument']['num_strings']
-        C = config['model']['params']['num_classes']
+        preds_tab = None
+        if tab_logits is not None:
+            S, C = config['instrument']['num_strings'], config['model']['params']['num_classes']
+            if tab_logits.dim() == 4:
+                preds_tab = torch.argmax(tab_logits.permute(0, 2, 1, 3), dim=-1)
+            elif tab_logits.dim() == 2:
+                preds_tab = torch.argmax(tab_logits.view(-1, S, C), dim=-1)
 
-        if config['loss']['active_loss'] == 'softmax_groups':
-            if tab_logits.dim() == 4: # FretNet (B, T, S, C)
-                preds_tab = torch.argmax(tab_logits.permute(0, 2, 1, 3), dim=-1) # (B, S, T)
-            elif tab_logits.dim() == 2: # TabCNN (B_flat, S*C)
-                preds_tab = torch.argmax(tab_logits.view(-1, S, C), dim=-1) # (B_flat, S)
-            else:
-                raise ValueError(f"Unsupported tab_logits dimension for report: {tab_logits.dim()}")
-        else: # logistic_bank
-            # ... (logistic bank kodu) ...
-            pass
-    
-    # 5. Görselleri oluşturmak için veriyi, hazırlama moduna göre doğru formatlarda al
+# 5. Veriyi, hazırlama moduna göre görseller için doğru formatta hazırla
     preparation_mode = config['data']['active_preparation_mode']
+    hop_seconds = config['data']['hop_length'] / config['data']['sample_rate']
+    
+    # Tüm numpy dizilerini None olarak başlat (robustness için)
+    gt_tab_np, pred_tab_np, gt_onset_np, gt_offset_np, pred_onset_np, pred_offset_np = (None,) * 6
 
     if preparation_mode == 'framify':
         batch_size = config['data']['batch_size']
-        time_steps = sample_batch['tablature'].shape[0] // batch_size
+        time_steps = next(iter(sample_batch['features'].values())).shape[0] // batch_size
         
-        gt_tab_np_raw = sample_batch['tablature'][:time_steps].cpu().numpy().T
-        pred_tab_np_raw = preds_tab[:time_steps].cpu().numpy().T
-        logger.info(f"Framify mode: sample extracted with T={time_steps}. Final shape: {gt_tab_np_raw.shape}")
-    else: # 'windowing' for FretNet
-        gt_tab_np_raw = sample_batch["tablature"][0].cpu().numpy()
-        pred_tab_np_raw = preds_tab[0].cpu().numpy()
-        logger.info(f"Windowing mode: sample extracted. Final shape: {gt_tab_np_raw.shape}")
+        # Tüm dizileri (Strings, Time) yani (S, T) formatına getir
+        gt_tab_np = sample_batch['tablature'][:time_steps].cpu().numpy().T
+        if preds_tab is not None: pred_tab_np = preds_tab[:time_steps].cpu().numpy().T
+        if 'onset_target' in sample_batch: gt_onset_np = sample_batch.get('onset_target')[:time_steps].cpu().numpy().T
+        if 'offset_target' in sample_batch: gt_offset_np = sample_batch.get('offset_target')[:time_steps].cpu().numpy().T
+        
+        if onset_logits is not None: pred_onset_np = (torch.sigmoid(onset_logits[:time_steps]) > 0.5).cpu().numpy().T
+        if offset_logits is not None: pred_offset_np = (torch.sigmoid(offset_logits[:time_steps]) > 0.5).cpu().numpy().T
 
-    # 6. Tüm görselleri çizdir ve kaydet
-    save_path = os.path.join(sample_path, "sample_tablature_ground_truth.png")
-    plot_guitar_tablature(gt_tab_np_raw.T, hop_seconds, save_path=save_path, title="Ground Truth Tablature")
-    logger.info(f"Ground Truth Tablature plot saved to: {save_path}")
+    else: # 'windowing' modu
+        # Zaten (S, T) formatında olanları al
+        gt_tab_np = sample_batch["tablature"][0].cpu().numpy()
+        if preds_tab is not None: pred_tab_np = preds_tab[0].cpu().numpy()
+        if 'onset_target' in sample_batch: gt_onset_np = sample_batch.get('onset_target')[0].cpu().numpy()
+        if 'offset_target' in sample_batch: gt_offset_np = sample_batch.get('offset_target')[0].cpu().numpy()
 
-    save_path = os.path.join(sample_path, "sample_tablature_prediction.png")
-    plot_guitar_tablature(pred_tab_np_raw.T, hop_seconds, save_path=save_path, title="Predicted Tablature")
-    logger.info(f"Predicted Tablature plot saved to: {save_path}")
+        # (T, S) formatında olanları (S, T)'ye çevir
+        if onset_logits is not None: pred_onset_np = (torch.sigmoid(onset_logits[0]) > 0.5).cpu().numpy().T
+        if offset_logits is not None: pred_offset_np = (torch.sigmoid(offset_logits[0]) > 0.5).cpu().numpy().T
 
-    gt_smp = tablature_to_stacked_multi_pitch(torch.from_numpy(gt_tab_np_raw), profile)
-    gt_pianoroll = stacked_multi_pitch_to_multi_pitch(gt_smp).numpy()
-    
-    pred_smp = tablature_to_stacked_multi_pitch(torch.from_numpy(pred_tab_np_raw), profile)
-    pred_pianoroll = stacked_multi_pitch_to_multi_pitch(pred_smp).numpy()
-    
-    save_path = os.path.join(sample_path, "sample_pianoroll_ground_truth.png")
-    plot_pianoroll(gt_pianoroll, hop_seconds, save_path=save_path, title="Ground Truth (Pianoroll View)")
-    logger.info(f"Ground Truth Pianoroll plot saved to: {save_path}")
+    # 6. Tüm görselleri çizdir (Çizim fonksiyonları (Time, Strings) yani (T, S) bekliyor)
+    if gt_tab_np is not None:
+        save_path = os.path.join(sample_path, "sample_tablature_ground_truth.png")
+        plot_guitar_tablature(gt_tab_np.T, hop_seconds, save_path=save_path, title="Ground Truth Tablature")
+        logger.info(f"Ground Truth Tablature plot saved to: {save_path}")
+    if pred_tab_np is not None:
+        save_path = os.path.join(sample_path, "sample_tablature_prediction.png")
+        plot_guitar_tablature(pred_tab_np.T, hop_seconds, save_path=save_path, title="Predicted Tablature")
+        logger.info(f"Predicted Tablature plot saved to: {save_path}")
 
-    save_path = os.path.join(sample_path, "sample_pianoroll_prediction.png")
-    plot_pianoroll(pred_pianoroll, hop_seconds, save_path=save_path, title="Prediction (Pianoroll View)")
-    logger.info(f"Predicted Pianoroll plot saved to: {save_path}")
+    if gt_onset_np is not None:
+        save_path = os.path.join(sample_path, "sample_onset_ground_truth.png")
+        plot_binary_activation(gt_onset_np.T, hop_seconds, save_path=save_path, title="Ground Truth Onsets")
+        logger.info(f"Ground Truth Onset plot saved to: {save_path}")
+    if pred_onset_np is not None:
+        save_path = os.path.join(sample_path, "sample_onset_prediction.png")
+        plot_binary_activation(pred_onset_np.T, hop_seconds, save_path=save_path, title="Predicted Onsets")
+        logger.info(f"Predicted Onset plot saved to: {save_path}")
+        
+    if gt_offset_np is not None:
+        save_path = os.path.join(sample_path, "sample_offset_ground_truth.png")
+        plot_binary_activation(gt_offset_np.T, hop_seconds, save_path=save_path, title="Ground Truth Offsets")
+        logger.info(f"Ground Truth Offset plot saved to: {save_path}")
+    if pred_offset_np is not None:
+        save_path = os.path.join(sample_path, "sample_offset_prediction.png")
+        plot_binary_activation(pred_offset_np.T, hop_seconds, save_path=save_path, title="Predicted Offsets")
+        logger.info(f"Predicted Offset plot saved to: {save_path}")
+
+    if gt_tab_np is not None and pred_tab_np is not None:
+        gt_smp = tablature_to_stacked_multi_pitch(torch.from_numpy(gt_tab_np), profile)
+        gt_pianoroll = stacked_multi_pitch_to_multi_pitch(gt_smp).numpy()
+        pred_smp = tablature_to_stacked_multi_pitch(torch.from_numpy(pred_tab_np), profile)
+        pred_pianoroll = stacked_multi_pitch_to_multi_pitch(pred_smp).numpy()
+        
+        save_path = os.path.join(sample_path, "sample_pianoroll_ground_truth.png")
+        plot_pianoroll(gt_pianoroll, hop_seconds, save_path=save_path, title="Ground Truth (Pianoroll View)")
+        logger.info(f"Ground Truth Pianoroll plot saved to: {save_path}")
+        save_path = os.path.join(sample_path, "sample_pianoroll_prediction.png")
+        plot_pianoroll(pred_pianoroll, hop_seconds, save_path=save_path, title="Prediction (Pianoroll View)")
+        logger.info(f"Predicted Pianoroll plot saved to: {save_path}")
 
     logger.info("Experiment report generation complete.")

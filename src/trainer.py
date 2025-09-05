@@ -19,7 +19,7 @@ from src.utils.agt_tools import logistic_to_tablature
 logger = logging.getLogger(__name__)
 
 class Trainer:
-    def __init__(self, model, train_loader, val_loader, optimizer, scheduler, device, config, experiment_path, class_weights=None, writer=None, initial_history=None):
+    def __init__(self, model, train_loader, val_loader, optimizer, scheduler, device, config, experiment_path, main_exp_path, class_weights=None, writer=None, initial_history=None):
         self.model = model
         self.train_loader = train_loader
         self.val_loader = val_loader
@@ -28,6 +28,7 @@ class Trainer:
         self.device = device
         self.config = config
         self.experiment_path = experiment_path
+        self.main_exp_path = main_exp_path
         self.writer = writer
         
         self.loss_config = self.config['loss']
@@ -44,7 +45,7 @@ class Trainer:
         self.scaler = GradScaler(enabled=self.use_amp)
         self.early_stopper = self._setup_early_stopping()
         
-        logger.info("Trainer initialized with the new modular structure.")
+        logger.info("Trainer initialized.")
 
     def _setup_early_stopping(self):
         es_config = self.training_config.get('early_stopping', {})
@@ -61,12 +62,12 @@ class Trainer:
 
     def _create_empty_history(self):
         keys_with_phases = [
-            "loss_total", "loss_primary", "loss_aux",
+            "loss_total", "loss_primary", "loss_aux", "loss_onset", "loss_offset",
             "tab_f1", "tab_precision", "tab_recall",
             "tab_f1_macro", "tab_precision_macro", "tab_recall_macro", 
             "mp_f1", "mp_precision", "mp_recall",
             "octave_f1", "octave_precision", "octave_recall",
-            "octave_f1_macro", "octave_precision_macro", "octave_recall_macro"
+            "octave_f1_macro", "octave_precision_macro", "octave_recall_macro",
             "tab_error_total", "tab_error_substitution", "tab_error_miss", "tab_error_false_alarm"
         ]
         
@@ -80,10 +81,9 @@ class Trainer:
     
     def _run_epoch(self, data_loader, is_training=True):
         self.model.train(is_training)
-        epoch_losses = {"total": 0.0, "primary": 0.0, "aux": 0.0}
+        epoch_losses = {"total": 0.0, "primary": 0.0, "aux": 0.0, "onset": 0.0, "offset": 0.0}
         all_tab_logits_list, all_tab_targets_list = [], []
         
-        aux_enabled = self.loss_config.get('auxiliary_loss', {}).get('enabled', False)
         desc = "Training" if is_training else "Validating"
         
         for batch in tqdm(data_loader, desc=desc, leave=False):
@@ -96,6 +96,7 @@ class Trainer:
                 self.optimizer.zero_grad(set_to_none=True)
                 with autocast(enabled=self.use_amp):
                     model_output = self.model(**inputs)
+                    # loss_fn orijinal haliyle, maskesiz çağrılıyor
                     loss_dict = self.loss_fn(model_output, batch)
                     loss_to_backprop = loss_dict['total_loss']
                 
@@ -105,95 +106,87 @@ class Trainer:
                     self.scaler.update()
 
             if torch.isfinite(loss_to_backprop):
-                epoch_losses["total"] += loss_dict['total_loss'].item()
-                epoch_losses["primary"] += loss_dict['primary_loss'].item()
-                epoch_losses["aux"] += loss_dict['aux_loss'].item()
+                for key in epoch_losses.keys():
+                    epoch_losses[key] += loss_dict.get(f'{key}_loss', torch.tensor(0.0)).item()
             
-            tab_logits = model_output[0] if aux_enabled else model_output
+            tab_logits = model_output['tab_logits']
             all_tab_logits_list.append(tab_logits.cpu().detach())
             all_tab_targets_list.append(batch['tablature'].cpu().detach())
 
+        # Metrik hesaplama fonksiyonu orijinal haliyle, maskesiz çağrılıyor
         epoch_metrics = self._calculate_all_metrics(all_tab_logits_list, all_tab_targets_list)
         
         num_batches = len(data_loader) if len(data_loader) > 0 else 1
         epoch_metrics['loss_total'] = epoch_losses["total"] / num_batches
         epoch_metrics['loss_primary'] = epoch_losses["primary"] / num_batches
         epoch_metrics['loss_aux'] = epoch_losses["aux"] / num_batches
-        
+        epoch_metrics['loss_onset'] = epoch_losses["onset"] / num_batches
+        epoch_metrics['loss_offset'] = epoch_losses["offset"] / num_batches
+
         return epoch_metrics
 
+    # _calculate_all_metrics orijinal haline döndürüldü
     def _calculate_all_metrics(self, logits_list, targets_list):
         all_logits = torch.cat(logits_list, dim=0)
         all_targets = torch.cat(targets_list, dim=0)
         
         S = self.instrument_config['num_strings']
-        C = self.model.num_classes
+        C = self.config['model']['params']['num_classes']
 
         if self.loss_config['active_loss'] == 'softmax_groups':
-            if all_logits.dim() == 4: # FretNet (B, T, S, C) output
-                # (B, T, S, C) -> (B, S, T, C) -> (B, S, T)
+            if all_logits.dim() == 4:
                 preds_tab = torch.argmax(all_logits.permute(0, 2, 1, 3), dim=-1)
-            elif all_logits.dim() == 2: # TabCNN (B_flat, S*C) output
-                # (B_flat, S*C) -> (B_flat, S, C) -> (B_flat, S)
+            elif all_logits.dim() == 2:
                 preds_tab = torch.argmax(all_logits.view(-1, S, C), dim=-1)
             else:
                 raise ValueError(f"Unsupported all_logits dimension for metrics: {all_logits.dim()}")
-        else: # logistic_bank
-            # ... (Bu kısım gelecekteki logistic bank kullanımı için)
+        else:
             pass
 
-        logger.debug(f"Shape after argmax: preds_tab={preds_tab.shape}, all_targets={all_targets.shape}")
-
-        # TabCNN target (B_flat, S)
-        # FretNet target (B, S, T) 
-        if all_targets.dim() == 3: # FretNet target
+        if all_targets.dim() == 3:
             targets_flat = all_targets.permute(0, 2, 1).reshape(-1, S)
-        else: # TabCNN target
+        else:
             targets_flat = all_targets
 
-        # preds_tab de FretNet için (B,S,T)'den (B*T,S)'ye çevrilmeli
         if preds_tab.dim() == 3:
             preds_tab_flat = preds_tab.permute(0, 2, 1).reshape(-1, S)
         else:
             preds_tab_flat = preds_tab
         
-        logger.debug(f"Shape after flattening for metrics: preds_tab_flat={preds_tab_flat.shape}, targets_flat={targets_flat.shape}")
-
-        silence_class = self.instrument_config['num_frets'] + 1
-
-        tab_metrics_raw = compute_tablature_metrics(preds_tab_flat, targets_flat, self.metrics_config.get('include_silence', False))
-        mp_metrics_raw = compute_multipitch_metrics(preds_tab_flat, targets_flat, self.guitar_profile)
-        octave_metrics_raw = compute_octave_tolerant_metrics(preds_tab_flat, targets_flat, self.instrument_config['tuning'], silence_class)
+        preds_to_use = preds_tab_flat
+        targets_to_use = targets_flat
         
-        error_scores_raw = compute_tablature_error_scores(preds_tab_flat, targets_flat, silence_class=silence_class)
+        silence_class = self.instrument_config['silence_class'] 
+
+        # Metrik fonksiyonları orijinal haliyle, ignore_index olmadan çağrılıyor
+        tab_metrics_raw = compute_tablature_metrics(preds_to_use, targets_to_use, self.metrics_config.get('include_silence', False))
+        mp_metrics_raw = compute_multipitch_metrics(preds_to_use, targets_to_use, self.guitar_profile)
+        octave_metrics_raw = compute_octave_tolerant_metrics(preds_to_use, targets_to_use, self.instrument_config['tuning'], silence_class)
+        error_scores_raw = compute_tablature_error_scores(preds_to_use, targets_to_use, silence_class=silence_class)
 
         final_metrics = {
-        'tab_f1': tab_metrics_raw.get('overall_f1', 0.0),
-        'tab_precision': tab_metrics_raw.get('overall_precision', 0.0),
-        'tab_recall': tab_metrics_raw.get('overall_recall', 0.0),
-        'tab_f1_macro': tab_metrics_raw.get('overall_f1_macro', 0.0),
-        'tab_precision_macro': tab_metrics_raw.get('overall_precision_macro', 0.0),
-        'tab_recall_macro': tab_metrics_raw.get('overall_recall_macro', 0.0),
-        
-        'mp_f1': mp_metrics_raw.get('multipitch_f1', 0.0),
-        'mp_precision': mp_metrics_raw.get('multipitch_precision', 0.0),
-        'mp_recall': mp_metrics_raw.get('multipitch_recall', 0.0),
-        
-        'octave_f1': octave_metrics_raw.get('octave_f1', 0.0),
-        'octave_precision': octave_metrics_raw.get('octave_precision', 0.0),
-        'octave_recall': octave_metrics_raw.get('octave_recall', 0.0),
-        'octave_f1_macro': octave_metrics_raw.get('octave_f1_macro', 0.0),
-        'octave_precision_macro': octave_metrics_raw.get('octave_precision_macro', 0.0),
-        'octave_recall_macro': octave_metrics_raw.get('octave_recall_macro', 0.0),
-
-        'tab_error_total': error_scores_raw.get('tab_error_total', 0.0),
-        'tab_error_substitution': error_scores_raw.get('tab_error_substitution', 0.0),
-        'tab_error_miss': error_scores_raw.get('tab_error_miss', 0.0),
-        'tab_error_false_alarm': error_scores_raw.get('tab_error_false_alarm', 0.0)
+            'tab_f1': tab_metrics_raw.get('overall_f1', 0.0),
+            'tab_precision': tab_metrics_raw.get('overall_precision', 0.0),
+            'tab_recall': tab_metrics_raw.get('overall_recall', 0.0),
+            'tab_f1_macro': tab_metrics_raw.get('overall_f1_macro', 0.0),
+            'tab_precision_macro': tab_metrics_raw.get('overall_precision_macro', 0.0),
+            'tab_recall_macro': tab_metrics_raw.get('overall_recall_macro', 0.0),
+            'mp_f1': mp_metrics_raw.get('multipitch_f1', 0.0),
+            'mp_precision': mp_metrics_raw.get('multipitch_precision', 0.0),
+            'mp_recall': mp_metrics_raw.get('multipitch_recall', 0.0),
+            'octave_f1': octave_metrics_raw.get('octave_f1', 0.0),
+            'octave_precision': octave_metrics_raw.get('octave_precision', 0.0),
+            'octave_recall': octave_metrics_raw.get('octave_recall', 0.0),
+            'octave_f1_macro': octave_metrics_raw.get('octave_f1_macro', 0.0),
+            'octave_precision_macro': octave_metrics_raw.get('octave_precision_macro', 0.0),
+            'octave_recall_macro': octave_metrics_raw.get('octave_recall_macro', 0.0),
+            'tab_error_total': error_scores_raw.get('tab_error_total', 0.0),
+            'tab_error_substitution': error_scores_raw.get('tab_error_substitution', 0.0),
+            'tab_error_miss': error_scores_raw.get('tab_error_miss', 0.0),
+            'tab_error_false_alarm': error_scores_raw.get('tab_error_false_alarm', 0.0)
         }
-        
         return final_metrics
-
+        
     def train(self, start_epoch=0, best_val_metric=-1):
         self.model.to(self.device)
         monitor_metric_key = self.early_stopper.monitor if self.early_stopper else 'val_tab_f1'
@@ -246,8 +239,9 @@ class Trainer:
         
         log_message = (
             f"\n--- Epoch {epoch+1:02d}/{total_epochs} --- LR: {lr:.6f}\n"
-            f"Losses              | Train: {tm['loss_total']:.4f}, Validation: {vm['loss_total']:.4f}\n"
-            f"--------------------------------------------------------------------------------\n"
+            f"Losses (Total)      | Train: {tm['loss_total']:.4f}, Validation: {vm['loss_total']:.4f}\n"
+            f"  └─ (P/A/On/Off)    | Train: {tm['loss_primary']:.3f}/{tm['loss_aux']:.3f}/{tm['loss_onset']:.3f}/{tm['loss_offset']:.3f} | Val: {vm['loss_primary']:.3f}/{vm['loss_aux']:.3f}/{vm['loss_onset']:.3f}/{vm['loss_offset']:.3f}\n"
+            f"------------------------------------------------------------------------------------------------------------------\n"
             
             f"Tablature Metrics\n"
             f" ├─ F1-Score    (W/M) | Train: {tm.get('tab_f1', 0):.4f} / {tm.get('tab_f1_macro', 0):.4f} | Val: {vm.get('tab_f1', 0):.4f} / {vm.get('tab_f1_macro', 0):.4f}\n"
@@ -298,7 +292,8 @@ class Trainer:
             logger.info("Running final error analysis...")
             run_error_analysis(
                 experiment_path=self.experiment_path,
-                val_loader=self.val_loader,
+                main_exp_path =self.main_exp_path,
+                val_loader=self.val_loader
             )
         except Exception as e:
             logger.error(f"Could not run final error analysis. Reason: {e}", exc_info=True)
@@ -309,8 +304,8 @@ class Trainer:
         logger.info("Generating final experiment report...")
         try:
             generate_experiment_report(model=self.model, history=self.history, val_loader=self.val_loader,
-                                      config=self.config, experiment_path=self.experiment_path, device=self.device,
-                                      profile=self.guitar_profile)
+                                        config=self.config, experiment_path=self.experiment_path, device=self.device,
+                                        profile=self.guitar_profile)
         except Exception as e:
             logger.error(f"Could not generate experiment report. Reason: {e}", exc_info=True)
 

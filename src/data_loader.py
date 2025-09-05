@@ -1,262 +1,321 @@
 import os
-import time
 import subprocess
 import numpy as np
 import torch
 import torch.nn.functional as F
+import logging
+import torchaudio.transforms as T
+import random
 from tqdm import tqdm
 from torch.utils.data import Dataset, DataLoader
-from sklearn.model_selection import train_test_split
 from torch.nn.utils.rnn import pad_sequence
-from src.utils.logger import describe
 from functools import partial
-import logging
 
 logger = logging.getLogger(__name__)
 
 class TablatureDataset(Dataset):
     """
-    PyTorch Dataset for loading pre-computed features and tablature targets.
-    This version is updated to handle multiple input features dynamically and
-    generate the auxiliary multipitch target on-the-fly.
+    A PyTorch Dataset for tablature data.
+    
+    This Dataset is designed to work with full-track NPZ files. On each __getitem__ call,
+    it loads a full track and returns a random slice of a predefined length. This approach
+    ensures that the model sees a wide variety of data from all parts of the tracks
+    across epochs, improving generalization.
+    
+    It supports two main preparation modes, configured via the 'active_preparation_mode' key:
+    1. 'windowing': Returns a slice of 'window_size' length, intended as direct input for
+       sequence models like CRNNs or Transformers.
+    2. 'framify': Returns a larger slice of 'framify_chunk_size' length, intended as
+       "raw material" for a collate_fn that will further process it into smaller
+       frame-wise windows for CNNs.
     """
-    def __init__(self, npz_paths: list[str], config: dict):
+    def __init__(self, npz_paths: list[str], config: dict, augment: bool = False, zero_shot_map: dict = None):
+        """
+        Initializes the Dataset.
+        
+        Args:
+            npz_paths (list[str]): List of file paths to the NPZ data files.
+            config (dict): The main configuration dictionary.
+            augment (bool): Whether to apply data augmentation.
+            zero_shot_map (dict, optional): A map for zero-shot class handling. Defaults to None.
+        """
         self.npz_paths = npz_paths
         self.config = config
         self.data_config = config['data']
         self.instrument_config = config['instrument']
         self.loss_config = config['loss']
         
+        self.zero_shot_map = zero_shot_map
+        self.silence_class = self.instrument_config.get('silence_class', self.instrument_config.get('num_frets', 19) + 1)
+        
         self.active_features = self.data_config['active_features']
         self.target_keys = self.data_config.get('target_keys', ['tablature'])
         
+        self.feature_map = self.data_config.get('feature_to_file_map', {})
+        if not self.feature_map:
+            logger.warning("`feature_to_file_map` not found in config. Assuming feature keys match NPZ keys.")
+
+        # Get preparation mode and parameters from the config
+        self.active_preparation_mode = self.data_config.get('active_preparation_mode', 'windowing')
+        self.window_size = self.data_config.get('window_size')
+        self.framify_chunk_size = self.data_config.get('framify_chunk_size')
+        
+        logger.info(f"Dataset mode: '{self.active_preparation_mode}'. Window size: {self.window_size}, Framify chunk size: {self.framify_chunk_size}")
+
+        # Auxiliary loss setup
         self.aux_loss_enabled = self.loss_config.get('auxiliary_loss', {}).get('enabled', False)
         if self.aux_loss_enabled:
-            logger.info("Auxiliary loss is enabled. Multipitch target will be generated.")
+            logger.info("Auxiliary loss is enabled. Multipitch target will be generated on-the-fly.")
             self.tuning = torch.tensor(self.instrument_config['tuning'], dtype=torch.long)
             self.min_midi = self.instrument_config['min_midi']
             self.max_midi = self.instrument_config['max_midi']
             self.num_pitches = self.max_midi - self.min_midi + 1
         
+        # Augmentation setup
+        self.augment = augment
+        self.augmentation_transforms = None
+        if self.augment:
+            aug_config = self.data_config.get('augmentation', {})
+            time_mask_param = aug_config.get('time_masking_param', 30)
+            freq_mask_param = aug_config.get('freq_masking_param', 24)
+            self.augmentation_transforms = torch.nn.Sequential(
+                T.FrequencyMasking(freq_mask_param=freq_mask_param),
+                T.TimeMasking(time_mask_param=time_mask_param)
+            )
+            logger.info(f"On-the-fly data augmentation ENABLED. FreqMask: {freq_mask_param}, TimeMask: {time_mask_param}")
+            
         self.samples_metadata = [{'file_path': path} for path in self.npz_paths]
-        # YENİ LOG EKLENDİ - Sadece başlangıçta bilgi vermek için
         if len(self.samples_metadata) > 0:
-             logger.debug(f"Dataset initialized for {len(self.samples_metadata)} files. Features: {self.active_features}, Targets: {self.target_keys}.")
+            logger.debug(f"Dataset initialized for {len(self.samples_metadata)} files. Features: {self.active_features}, Targets: {self.target_keys}.")
 
     def __len__(self) -> int:
         return len(self.samples_metadata)
 
     def __getitem__(self, idx: int) -> dict:
+        """
+        Retrieves a single data item (a random slice from a track).
+        Includes robust error handling to prevent training crashes.
+        """
         path = self.samples_metadata[idx]['file_path']
-        sample = {}
-        features = {}
+        
+        if path is None:
+            logger.warning(f"Received a None path for idx={idx}. Skipping.")
+            return self.__getitem__(random.randint(0, len(self) - 1))
 
-        with np.load(path, allow_pickle=True) as data:
+        try:            
+            data = np.load(path, allow_pickle=True)
+            
+            features_dict = {}
+            targets_dict = {}
+            
             for feature_key in self.active_features:
-                if feature_key not in data:
-                    logger.warning(f"Feature key '{feature_key}' not found in {path}. Skipping.")
-                    continue
-
-                feature_data_full = data[feature_key].astype(np.float32)
-                
-                if feature_data_full.ndim == 4 and feature_data_full.shape[0] == 1:
-                    feature_data_full = feature_data_full.squeeze(0)
-                
-                # NPZ'den gelen boyut: (C, H, T)
-                feature_tensor = torch.from_numpy(feature_data_full.copy()).permute(0, 2, 1)
-                # Permute sonrası boyut: (C, T, H)
-                
-                # YENİ LOG EKLENDİ - __getitem__ içindeki tensör boyutunu görmek için
-                logger.debug(f"Loaded feature '{feature_key}' from {os.path.basename(path)} with shape: {feature_tensor.shape} (C, T, H)")
-                
-                features[feature_key] = feature_tensor
-
-            sample['features'] = features
-
-            tablature_tensor = None
-            if 'tablature' in self.target_keys and 'tablature' in data:
-                tablature_data = data['tablature'].astype(np.int64)
-                tablature_tensor = torch.from_numpy(tablature_data.copy())
-                
-                silence_class = self.instrument_config.get('num_frets', 19) + 1
-                tablature_tensor[tablature_tensor == -1] = silence_class
-                sample['tablature'] = tablature_tensor
-
+                npz_key = self.feature_map.get(feature_key, feature_key)
+                if npz_key not in data:
+                    raise KeyError(f"Feature key '{npz_key}' (from '{feature_key}') not found in {path}.")
+                feature_data = data[npz_key].astype(np.float32)
+                if feature_data.ndim == 4 and feature_data.shape[0] == 1:
+                    feature_data = feature_data.squeeze(0)
+                features_dict[feature_key] = torch.from_numpy(feature_data.copy())
+            
             for key in self.target_keys:
-                if key == 'tablature' or key not in data:
-                    continue
-                target_data = data[key]
-                target_tensor = torch.from_numpy(target_data.copy().astype(np.float32))
-                sample[key] = target_tensor
+                if key not in data: continue
+                if key == 'tablature':
+                    tab_data = data['tablature'].astype(np.int64)
+                    tab_tensor = torch.from_numpy(tab_data.copy())
+                    tab_tensor[tab_tensor == -1] = self.silence_class
+                    targets_dict['tablature'] = tab_tensor
+                elif key in ['onsets', 'offsets']:
+                    target_data_pitch_wise = data[key].astype(np.float32)
+                    target_data_per_string = np.any(target_data_pitch_wise, axis=1).astype(np.float32)
+                    new_key = f"{key.rstrip('s')}_target"
+                    targets_dict[new_key] = torch.from_numpy(target_data_per_string.copy())
+
+            data.close()
+
+            first_feature_key = self.active_features[0]
+            full_length = features_dict[first_feature_key].shape[-1]
+            
+            if self.active_preparation_mode == 'windowing':
+                target_length = self.window_size
+            elif self.active_preparation_mode == 'framify':
+                target_length = self.framify_chunk_size
+            else:
+                raise ValueError(f"Unknown preparation mode: '{self.active_preparation_mode}'")
+
+            if not isinstance(target_length, int) or target_length <= 0:
+                raise ValueError(f"Invalid target_length '{target_length}' for mode '{self.active_preparation_mode}'")
+            
+            # --- 3. Perform random slicing or padding ---
+            if full_length < target_length:
+                pad_amount = target_length - full_length
+                for key in features_dict:
+                    features_dict[key] = F.pad(features_dict[key], (0, pad_amount), 'constant', 0)
+                for key in targets_dict:
+                    pad_value = self.silence_class if key == 'tablature' else 0.0
+                    targets_dict[key] = F.pad(targets_dict[key], (0, pad_amount), 'constant', pad_value)
+                logger.debug(f"Padded '{os.path.basename(path)}' from {full_length} to {target_length} frames.")
+            else:
+                start_idx = random.randint(0, full_length - target_length)
+                end_idx = start_idx + target_length
+                for key in features_dict:
+                    features_dict[key] = features_dict[key][..., start_idx:end_idx]
+                for key in targets_dict:
+                    targets_dict[key] = targets_dict[key][..., start_idx:end_idx]
+
+            # --- 4. Apply post-slicing operations ---
+            if self.augment and self.augmentation_transforms:
+                for key in features_dict:
+                    if key != 'power':
+                        features_dict[key] = self.augmentation_transforms(features_dict[key])
+            
+            tablature_tensor = targets_dict.get('tablature')
+
+            if self.zero_shot_map and tablature_tensor is not None:
+                mask = torch.zeros(tablature_tensor.shape[1], dtype=torch.bool)
+                for s_idx, frets in self.zero_shot_map.items():
+                    s = int(s_idx) # Ensure string index is integer
+                    if s < tablature_tensor.shape[0]:
+                        for fret in frets:
+                            mask.logical_or_(tablature_tensor[s, :] == fret)
+                if torch.any(mask):
+                    tablature_tensor[:, mask] = self.silence_class
+                    targets_dict['tablature'] = tablature_tensor
 
             if self.aux_loss_enabled and tablature_tensor is not None:
                 num_strings, num_steps = tablature_tensor.shape
                 y_multipitch = torch.zeros((self.num_pitches, num_steps), dtype=torch.float32)
-                
-                silence_class = self.instrument_config.get('num_frets', 19) + 1
-                played_frets_mask = (tablature_tensor < silence_class) & (tablature_tensor >= 0)
-
+                mask = (tablature_tensor < self.silence_class) & (tablature_tensor >= 0)
                 for s in range(num_strings):
-                    for t in range(num_steps):
-                        if played_frets_mask[s, t]:
-                            fret = tablature_tensor[s, t]
-                            midi_note = self.tuning[s] + fret
-                            if self.min_midi <= midi_note <= self.max_midi:
-                                pitch_index = midi_note - self.min_midi
-                                y_multipitch[pitch_index, t] = 1.0
-                
-                sample['multipitch_target'] = y_multipitch
-            
-            # YENİ LOG EKLENDİ - Dönen sample'daki tüm anahtarları ve boyutlarını loglayalım
-            log_str = f"Sample {idx} final shapes: "
-            for k, v in sample.items():
-                if k == 'features':
-                    for fk, fv in v.items():
-                        log_str += f"features['{fk}']: {fv.shape}, "
-                else:
-                    log_str += f"'{k}': {v.shape}, "
-            logger.debug(log_str)
+                    string_notes = self.tuning[s] + tablature_tensor[s, :]
+                    valid_notes_mask = mask[s, :]
+                    for t in torch.where(valid_notes_mask)[0]:
+                        midi_note = string_notes[t]
+                        if self.min_midi <= midi_note <= self.max_midi:
+                            pitch_index = midi_note - self.min_midi
+                            y_multipitch[pitch_index, t] = 1.0
+                targets_dict['multipitch_target'] = y_multipitch
 
+            # --- 5. Assemble final sample and return ---
+            sample = {'features': features_dict}
+            sample.update(targets_dict)
             return sample
 
+        except Exception as e:
+            logger.error(f"Error processing file '{path}': {e}. Skipping and trying another random sample.")
+            return self.__getitem__(random.randint(0, len(self) - 1))
+
 def collate_fn(batch: list[dict], config: dict) -> dict:
+    """
+    Custom collate function to handle batching of data samples.
+    It prepares the data according to the 'active_preparation_mode'.
+    """
     preparation_mode = config['data']['active_preparation_mode']
-    logger.debug(f"\n--- Collate Function Start (Mode: {preparation_mode}, Batch Size: {len(batch)}) ---") # YENİ LOG EKLENDİ
+    if not batch:
+        return {}
+    
     collated_batch = {}
     
     feature_keys = list(batch[0]['features'].keys())
     collated_features = {}
-    
+
     if preparation_mode == 'windowing':
+        # For CRNNs, all samples are already sliced to the same length.
+        # We just stack them into a batch.
         for key in feature_keys:
-            tensors_to_pad = [sample['features'][key] for sample in batch] # Liste içinde (C, T, H)
-            permuted = [t.permute(1, 0, 2) for t in tensors_to_pad] # Liste içinde (T, C, H)
-            padded = pad_sequence(permuted, batch_first=True, padding_value=0) # (B, T_padded, C, H)
-            final_tensor = padded.permute(0, 2, 3, 1) # (B, C, H, T_padded)
-            collated_features[key] = final_tensor
-            # YENİ LOG EKLENDİ
-            logger.debug(f"[Windowing] Feature '{key}' final collated shape: {final_tensor.shape} (B, C, H, T_padded)")
+            # Stack tensors along a new batch dimension
+            collated_features[key] = torch.stack([sample['features'][key] for sample in batch])
     
     elif preparation_mode == 'framify':
-        padded_features = {}
-        max_len = max(sample['features'][feature_keys[0]].shape[1] for sample in batch)
-        for key in feature_keys:
-            padded_list = []
-            for sample in batch:
-                tensor = sample['features'][key] # (C, T, H)
-                pad_len = max_len - tensor.shape[1]
-                padded_tensor = F.pad(tensor, (0, 0, 0, pad_len), 'constant', 0) # (C, T_padded, H)
-                padded_list.append(padded_tensor)
-            padded_features[key] = torch.stack(padded_list) # (B, C, T_padded, H)
-            # YENİ LOG EKLENDİ
-            logger.debug(f"[Framify] Feature '{key}' after padding to max_len={max_len}: {padded_features[key].shape} (B, C, T_padded, H)")
-
         framify_win_size = config['data'].get('framify_window_size', 9)
         pad_amount = framify_win_size // 2
-        for key, tensor in padded_features.items():
-            tensor_permuted = tensor.permute(0, 1, 3, 2) # (B, C, H, T_padded)
-            inputs_padded = F.pad(tensor_permuted, (pad_amount, pad_amount), 'constant', 0)
-            unfolded = inputs_padded.unfold(3, framify_win_size, 1) # (B, C, H, T_out, W)
-            permuted_unfolded = unfolded.permute(0, 3, 1, 2, 4) # (B, T_out, C, H, W)
-            B, T, C, H, W = permuted_unfolded.shape
-            final_tensor = permuted_unfolded.reshape(B * T, C, H, W)
-            collated_features[key] = final_tensor
-            # YENİ LOG EKLENDİ
-            logger.debug(f"[Framify] Feature '{key}' after unfold(W={W}) & reshape: {final_tensor.shape} (B*T, C, H, W)")
+
+        for key in feature_keys:
+            tensor_batch = torch.stack([sample['features'][key] for sample in batch])
+            
+            # <<< DEĞİŞİKLİK BURADA: 'replicate' yerine 'constant' kullanıyoruz.
+            tensor_padded_window = F.pad(tensor_batch, (pad_amount, pad_amount), 'constant', 0)
+            
+            unfolded = tensor_padded_window.unfold(3, framify_win_size, 1)
+            unfolded = unfolded.permute(0, 3, 1, 2, 4)
+            B, T, C, F_bins, W = unfolded.shape
+            collated_features[key] = unfolded.reshape(B * T, C, F_bins, W)
 
     collated_batch['features'] = collated_features
 
+    # Process target keys
     target_keys = [k for k in batch[0].keys() if k != 'features']
     for key in target_keys:
-        tensors_to_pad = [sample[key] for sample in batch]
-        padding_value = -1 if key == 'tablature' else 0.0
+        tensors_to_stack = [sample[key] for sample in batch]
         
-        if tensors_to_pad[0].ndim == 2: # (S, T) or (P, T)
-            permuted = [t.permute(1, 0) for t in tensors_to_pad] # (T, S) or (T, P)
-            padded = pad_sequence(permuted, batch_first=True, padding_value=padding_value) # (B, T_padded, S)
-            final_tensor = padded.permute(0, 2, 1) # (B, S, T_padded)
-        else:
-            final_tensor = pad_sequence(tensors_to_pad, batch_first=True, padding_value=padding_value)
+        final_tensor = torch.stack(tensors_to_stack)
 
-        if preparation_mode == 'framify' and key in ['tablature', 'multipitch_target']:
-            S_or_P = final_tensor.shape[1]
-            reshaped_target = final_tensor.permute(0, 2, 1).reshape(-1, S_or_P) # (B*T, S) or (B*T, P)
+        if preparation_mode == 'framify' and key in ['tablature', 'multipitch_target', 'onset_target', 'offset_target']:
+            if final_tensor.ndim == 3: # (B, Channels, Time) -> (B*T, Channels)
+                reshaped_target = final_tensor.permute(0, 2, 1).reshape(-1, final_tensor.shape[1])
+            else: # (B, Time) -> (B*T)
+                reshaped_target = final_tensor.reshape(-1)
             collated_batch[key] = reshaped_target
-            # YENİ LOG EKLENDİ
-            logger.debug(f"Target '{key}' reshaped for framify: {reshaped_target.shape}")
         else:
             collated_batch[key] = final_tensor
-            # YENİ LOG EKLENDİ
-            logger.debug(f"Target '{key}' final collated shape: {final_tensor.shape}")
 
-    logger.debug(f"--- Collate Function End ---") # YENİ LOG EKLENDİ
     return collated_batch
 
-def get_dataloaders(config: dict) -> tuple[DataLoader, DataLoader, list[str]]:
+def prepare_dataset_files(config: dict) -> tuple[np.ndarray, list[str]]:
+    """
+    Prepares dataset files for K-Fold cross-validation.
+    Copies data to a local directory if not present and returns file paths and group IDs.
+    """
     dataset_name = config['dataset']
     drive_path = config['dataset_configs'][dataset_name]['drive_data_path']
     local_path = config['dataset_configs'][dataset_name]['local_data_path']
     
     if not os.path.exists(local_path) or not os.listdir(local_path):
-        logger.info("Data not found locally. Starting to copy from source...")
-        logger.info(f"Source: {drive_path}")
-        logger.info(f"Target: {local_path}")
+        logger.info(f"Data not found locally. Copying from '{drive_path}' to '{local_path}'...")
         os.makedirs(local_path, exist_ok=True)
-        start_time = time.time()
         try:
-            subprocess.run(['rsync', '-aP', drive_path, local_path], check=True)
-            end_time = time.time()
-            logger.info(f"Data copy finished in {int(end_time - start_time)} seconds.")
-        except Exception as e:
-            logger.warning(f"rsync failed: {e}. Falling back to 'cp'...")
-            try:
-                subprocess.run(['cp', '-rv', os.path.join(drive_path, '.'), local_path], check=True)
-                end_time = time.time()
-                logger.info(f"Data copy with 'cp' finished in {int(end_time - start_time)} seconds.")
-            except Exception as cp_e:
-                logger.critical(f"Both rsync and cp failed. Could not copy data. Error: {cp_e}")
-                raise
+            subprocess.run(['rsync', '-aP', drive_path.rstrip('/') + '/', local_path], check=True)
+        except Exception:
+            logger.warning("rsync failed. Falling back to 'cp'...")
+            subprocess.run(['cp', '-rv', os.path.join(drive_path, '.'), local_path], check=True)
+        logger.info("Data copy finished.")
     else:
-        logger.info("Data found locally. Skipping copy step.")
-    logger.info("-" * 30)
+        logger.info("Data found locally, skipping copy.")
     
-    npz_dir = local_path
-    file_list = sorted(os.listdir(npz_dir))
-    all_npz_paths = [
-        os.path.join(npz_dir, fname)
-        for fname in tqdm(file_list, desc="Scanning .npz files")
-        if fname.endswith(".npz")
-    ]
-    val_size = config['data']['validation_split_size']
-    random_state = config['data']['random_state']
-    train_paths, val_paths = train_test_split(all_npz_paths, test_size=val_size, random_state=random_state)
+    all_npz_paths = np.array([os.path.join(local_path, fname) for fname in sorted(os.listdir(local_path)) if fname.endswith(".npz")])
+    groups = [os.path.basename(path).split('_')[0] for path in all_npz_paths]
     
-    logger.info("Creating Train and Validation datasets...")
-    train_dataset = TablatureDataset(train_paths, config)
-    val_dataset = TablatureDataset(val_paths, config)
+    logger.info(f"Total of {len(all_npz_paths)} files and {len(np.unique(groups))} unique groups (guitarists) found.")
     
+    return all_npz_paths, groups
 
+
+def get_dataloaders_for_fold(config: dict, train_paths: list[str], val_paths: list[str], zero_shot_map: dict = None) -> tuple[DataLoader, DataLoader]:
+    """
+    Creates and returns the training and validation DataLoaders for a specific fold.
+    """
+    logger.info("Initializing train and validation datasets for the current fold...")
+    
+    data_conf = config['data']
+    is_augment_enabled = data_conf.get('augmentation', {}).get('enabled', False)
+    
+    train_dataset = TablatureDataset(train_paths, config, augment=is_augment_enabled, zero_shot_map=None)
+    val_dataset = TablatureDataset(val_paths, config, augment=False, zero_shot_map=zero_shot_map) 
+    
     collate_with_config = partial(collate_fn, config=config)
     
     train_loader = DataLoader(
-        train_dataset,
-        batch_size=config['data']['batch_size'],
-        shuffle=True,
-        num_workers=config['data'].get('num_workers', 0),
-        pin_memory=True if config['data'].get('num_workers', 0) > 0 else False,
-        drop_last=True,
-        collate_fn=collate_with_config 
+        train_dataset, batch_size=data_conf['batch_size'], shuffle=True,
+        num_workers=data_conf.get('num_workers', 0),
+        pin_memory=data_conf.get('num_workers', 0) > 0,
+        drop_last=True, collate_fn=collate_with_config 
     )
     val_loader = DataLoader(
-        val_dataset,
-        batch_size=config['data']['batch_size'],
-        shuffle=False,
-        num_workers=config['data'].get('num_workers', 0),
-        pin_memory=True if config['data'].get('num_workers', 0) > 0 else False,
-        drop_last=True,
-        collate_fn=collate_with_config  
+        val_dataset, batch_size=data_conf['batch_size'], shuffle=False,
+        num_workers=data_conf.get('num_workers', 0),
+        pin_memory=data_conf.get('num_workers', 0) > 0,
+        drop_last=True, collate_fn=collate_with_config   
     )
     
-    logger.info(f"Training data: {len(train_dataset)} files, {len(train_loader)} batches.")
-    logger.info(f"Validation data: {len(val_dataset)} files, {len(val_loader)} batches.")
-    return train_loader, val_loader, train_paths
+    logger.info(f"DataLoaders created. Training batches: {len(train_loader)}, Validation batches: {len(val_loader)}.")
+    
+    return train_loader, val_loader

@@ -24,7 +24,14 @@ class PositionalEncoding(nn.Module):
         return self.dropout(x)
 
 class Transformer(BaseTabModel):
+    """
+    A Transformer-based model for sequence-to-sequence tablature transcription.
+    
+    It uses dynamic CNN branches for feature extraction, which are then projected
+    into the model's dimension and processed by a Transformer Encoder.
+    """
     def __init__(self, config: dict, **kwargs):
+        """Initializes the Transformer model architecture."""
         num_strings = config['instrument']['num_strings']
         num_classes_per_string = config['model']['params']['num_classes']
         super().__init__(num_strings, num_classes_per_string)
@@ -35,13 +42,23 @@ class Transformer(BaseTabModel):
         self.instrument_config = self.config['instrument']
 
         self.active_loss_strategy = self.loss_config['active_loss']
+        
+        # --- DEĞİŞİKLİK BAŞLANGICI ---
         self.use_auxiliary_head = self.loss_config.get('auxiliary_loss', {}).get('enabled', False)
+        self.use_onset_head = self.loss_config.get('onset_loss', {}).get('enabled', False)
+        self.use_offset_head = self.loss_config.get('offset_loss', {}).get('enabled', False)
+        # --- DEĞİŞİKLİK SONU ---
+
         self.active_features = self.config['data']['active_features']
         self.feature_definitions = self.config['feature_definitions']
         
         logger.info("Initializing DYNAMIC Transformer model...")
         logger.info(f" -> Active loss strategy: '{self.active_loss_strategy}'")
+        # --- DEĞİŞİKLİK BAŞLANGICI ---
         logger.info(f" -> Using Auxiliary Head: {self.use_auxiliary_head}")
+        logger.info(f" -> Using Onset Head: {self.use_onset_head}")
+        logger.info(f" -> Using Offset Head: {self.use_offset_head}")
+        # --- DEĞİŞİKLİK SONU ---
 
         self.cnn_branches = nn.ModuleDict()
         for feature_key in self.active_features:
@@ -49,17 +66,15 @@ class Transformer(BaseTabModel):
             in_channels = feature_def['in_channels']
             groups = in_channels if feature_key == 'hcqt' and in_channels > 1 else 1
             branch = nn.Sequential(
-                nn.Conv2d(in_channels, 36, kernel_size=3, padding=1, groups=groups),
-                nn.BatchNorm2d(36), nn.ReLU(),
-                nn.Conv2d(36, 36, kernel_size=3, padding=1),
-                nn.BatchNorm2d(36), nn.ReLU(),
-                nn.MaxPool2d(kernel_size=(2, 1))
+                nn.Conv2d(in_channels, 36, kernel_size=3, padding=1, groups=groups), nn.BatchNorm2d(36), nn.ReLU(),
+                nn.Conv2d(36, 64, kernel_size=3, padding=1), nn.BatchNorm2d(64), nn.ReLU(),
+                nn.MaxPool2d(kernel_size=(2, 1)), nn.Dropout(0.25)
             )
             self.cnn_branches[feature_key] = branch
 
         with torch.no_grad():
             total_cnn_output_size = 0
-            dummy_time_dim = 200
+            dummy_time_dim = self.config['data']['window_size']
             for feature_key in self.active_features:
                 feature_def = self.feature_definitions[feature_key]
                 dummy_input = torch.randn(1, feature_def['in_channels'], feature_def['num_freq'], dummy_time_dim)
@@ -82,7 +97,7 @@ class Transformer(BaseTabModel):
         self.pos_encoder = PositionalEncoding(d_model, self.model_params.get('dropout', 0.1))
         encoder_layer = nn.TransformerEncoderLayer(
             d_model, n_head, self.model_params.get('dim_feedforward', 1024), 
-            self.model_params.get('dropout', 0.1), batch_first=True
+            self.model_params.get('dropout', 0.1), batch_first=True, norm_first=True
         )
         self.transformer_encoder = nn.TransformerEncoder(encoder_layer, num_encoder_layers)
         
@@ -90,25 +105,52 @@ class Transformer(BaseTabModel):
             tab_output_size = self.num_strings * self.num_classes
         else: # logistic_bank
             tab_output_size = self.num_strings * (self.num_classes - 1)
-        self.tablature_head = nn.Linear(d_model, tab_output_size)
+
+        self.tablature_head = nn.Sequential(
+            nn.Linear(d_model, 128), nn.ReLU(),
+            nn.Dropout(0.5), nn.Linear(128, tab_output_size)
+        )
         
         self.auxiliary_head = None
         if self.use_auxiliary_head:
             num_pitches = self.instrument_config['max_midi'] - self.instrument_config['min_midi'] + 1
-            self.auxiliary_head = nn.Linear(d_model, num_pitches)
+            self.auxiliary_head = nn.Sequential(
+                nn.Linear(d_model, 128), nn.ReLU(),
+                nn.Dropout(0.25), nn.Linear(128, num_pitches)
+            )
+
+        # --- DEĞİŞİKLİK BAŞLANGICI ---
+        self.onset_head = None
+        if self.use_onset_head:
+            self.onset_head = nn.Sequential(
+                nn.Linear(d_model, 64), nn.ReLU(),
+                nn.Dropout(0.25), nn.Linear(64, self.num_strings)
+            )
+            logger.info(f" -> Onset head created for {self.num_strings} strings.")
+
+        self.offset_head = None
+        if self.use_offset_head:
+            self.offset_head = nn.Sequential(
+                nn.Linear(d_model, 64), nn.ReLU(),
+                nn.Dropout(0.25), nn.Linear(64, self.num_strings)
+            )
+            logger.info(f" -> Offset head created for {self.num_strings} strings.")
 
         self.head = nn.ModuleDict({
             'pos_encoder': self.pos_encoder,
             'transformer_encoder': self.transformer_encoder,
             'tablature_head': self.tablature_head
         })
-        if self.auxiliary_head:
-            self.head.add_module('auxiliary_head', self.auxiliary_head)
+        if self.auxiliary_head: self.head.add_module('auxiliary_head', self.auxiliary_head)
+        if self.onset_head: self.head.add_module('onset_head', self.onset_head)
+        if self.offset_head: self.head.add_module('offset_head', self.offset_head)
+        # --- DEĞİŞİKLİK SONU ---
 
     def forward(self, *args, **kwargs):
+        """Performs a forward pass through the Transformer model."""
         features_dict = kwargs or (args[0] if args else {})
         if not features_dict:
-            raise ValueError("Transformer forward pass received no input")
+            raise ValueError("Model forward pass received no input")
         
         B, T = next(iter(features_dict.values())).shape[0], next(iter(features_dict.values())).shape[3]
 
@@ -119,20 +161,27 @@ class Transformer(BaseTabModel):
             branch_outputs.append(reshaped_out)
             
         x = torch.cat(branch_outputs, dim=2)
-        
         x = self.input_proj(x) * math.sqrt(self.d_model)
         x = self.pos_encoder(x)
-        transformer_out = self.transformer_encoder(x)
+        transformer_out = self.transformer_encoder(x) 
         
+        # --- DEĞİŞİKLİK BAŞLANGICI: Çıktıları sözlük olarak döndür ---
+        outputs = {}
         tab_logits = self.tablature_head(transformer_out)
-        
         if self.active_loss_strategy == 'softmax_groups':
-            final_tab_output = tab_logits.view(B, T, self.num_strings, self.num_classes)
+            outputs['tab_logits'] = tab_logits.view(B, T, self.num_strings, self.num_classes)
         else: # logistic_bank
-            final_tab_output = tab_logits.view(B, T, self.num_strings, self.num_classes - 1)
+            outputs['tab_logits'] = tab_logits.view(B, T, self.num_strings, self.num_classes - 1)
             
         if self.use_auxiliary_head:
-            multipitch_logits = self.auxiliary_head(transformer_out)
-            return final_tab_output, multipitch_logits
-        else:
-            return final_tab_output
+            outputs['multipitch_logits'] = self.auxiliary_head(transformer_out)
+        if self.use_onset_head:
+            outputs['onset_logits'] = self.onset_head(transformer_out)
+        if self.use_offset_head:
+            outputs['offset_logits'] = self.offset_head(transformer_out)
+        
+        log_str = ", ".join([f"{k}={v.shape}" for k, v in outputs.items()])
+        logger.debug(f"[Transformer] Output shapes: {log_str}")
+
+        return outputs
+        # --- DEĞİŞİKLİK SONU ---

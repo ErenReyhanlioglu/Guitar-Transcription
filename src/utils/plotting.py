@@ -5,7 +5,6 @@ from pathlib import Path
 from matplotlib.patches import Rectangle
 import matplotlib
 
-# Use a non-interactive backend to prevent issues in environments without a GUI
 matplotlib.use('Agg')
 
 def plot_loss_curves(history: dict, save_path: str or Path):
@@ -172,46 +171,93 @@ def plot_guitar_tablature(tab_data, hop_seconds, save_path, title='Guitar Tablat
     plt.savefig(save_path, dpi=300)
     plt.close()
 
-def plot_confusion_matrix(cm, target_names, title='Confusion matrix', cmap=None, normalize=True):
+def plot_binary_activation(activation_matrix, hop_seconds, save_path=None, title="Binary Activation"):
     """
-    This function prints and plots the confusion matrix.
-    Normalization can be applied by setting `normalize=True`.
+    Generates and saves a pianoroll-style plot for a binary activation matrix.
+    If save_path is provided, it saves the figure and closes it. Otherwise, it shows the plot.
     """
-    accuracy = np.trace(cm) / float(np.sum(cm))
+    if activation_matrix is None or activation_matrix.size == 0:
+        return
+
+    fig, ax = plt.subplots(figsize=(20, 4))
+    
+    img = ax.imshow(
+        activation_matrix.T, 
+        aspect='auto', 
+        origin='lower', 
+        interpolation='nearest',
+        cmap='viridis' 
+    )
+
+    ax.set_title(title, fontsize=16)
+    
+    num_strings = activation_matrix.shape[1]
+    ax.set_ylabel("String")
+    ax.set_yticks(np.arange(num_strings))
+    ax.set_yticklabels([f'Str {i+1}' for i in range(num_strings)])
+
+    num_frames = activation_matrix.shape[0]
+    time_axis_ticks = np.arange(0, num_frames, max(1, num_frames // 10))
+    ax.set_xticks(time_axis_ticks)
+    ax.set_xticklabels([f"{tick * hop_seconds:.2f}" for tick in time_axis_ticks])
+    ax.set_xlabel("Time (s)")
+
+    fig.colorbar(img, ax=ax, label="Activation")
+    plt.tight_layout()
+
+    if save_path:
+        try:
+            fig.savefig(save_path, bbox_inches='tight', dpi=150)
+        except Exception as e:
+            print(f"WARNING: {save_path}. Cause of: {e}")
+        finally:
+            plt.close(fig)
+    else:
+        plt.show()
+
+def plot_confusion_matrix(cm, target_names, title='Confusion Matrix', cmap=None, normalize=True, save_path=None):
+    """
+    Generates and saves a plot for a given sklearn confusion matrix.
+    If save_path is provided, it saves the figure and closes it. Otherwise, it shows the plot.
+    """
+    accuracy = np.trace(cm) / float(np.sum(cm)) if np.sum(cm) > 0 else 0
     misclass = 1 - accuracy
 
     if cmap is None:
         cmap = plt.get_cmap('viridis')
 
-    plt.figure(figsize=(14, 12)) 
-    plt.imshow(cm, interpolation='nearest', cmap=cmap)
-    plt.title(title, fontsize=16)
-    plt.colorbar()
-
+    fig, ax = plt.subplots(figsize=(10, 8)) 
+    im = ax.imshow(cm, interpolation='nearest', cmap=cmap)
+    fig.colorbar(im, ax=ax)
+    ax.set_title(title)
+    
     if target_names is not None:
         tick_marks = np.arange(len(target_names))
-        plt.xticks(tick_marks, target_names, rotation=90, fontsize=9)
-        plt.yticks(tick_marks, target_names, fontsize=9)
+        ax.set_xticks(tick_marks)
+        ax.set_xticklabels(target_names, rotation=90)
+        ax.set_yticks(tick_marks)
+        ax.set_yticklabels(target_names)
 
-    if normalize:
-        row_sums = cm.sum(axis=1)[:, np.newaxis]
-        cm_normalized = np.divide(cm.astype('float'), row_sums, 
-                                  out=np.zeros_like(cm, dtype=float), 
-                                  where=row_sums!=0)
+    cm_for_text = cm.astype('float') / (cm.sum(axis=1)[:, np.newaxis] + 1e-8) if normalize else cm
 
-    thresh = cm_normalized.max() / 2. if normalize else cm.max() / 2.
+    thresh = cm_for_text.max() / 1.5
     for i, j in itertools.product(range(cm.shape[0]), range(cm.shape[1])):
-        if normalize:
-            plt.text(j, i, f"{cm_normalized[i, j]:.2f}",
-                     horizontalalignment="center",
-                     color="white" if cm_normalized[i, j] > thresh else "black",
-                     fontsize=7) 
-        else:
-            plt.text(j, i, f"{cm[i, j]:,}",
-                     horizontalalignment="center",
-                     color="white" if cm[i, j] > thresh else "black",
-                     fontsize=7)
+        value = cm_for_text[i, j]
+        format_str = "{:0.2f}" if normalize else "{:,}"
+        ax.text(j, i, format_str.format(value),
+                 horizontalalignment="center",
+                 color="white")
 
-    plt.tight_layout()
-    plt.ylabel('True Label', fontsize=12)
-    plt.xlabel(f'Predicted Label\naccuracy={accuracy:0.4f}; misclass={misclass:0.4f}', fontsize=12)
+    fig.tight_layout()
+    ax.set_ylabel('True Label')
+    ax.set_xlabel(f'Predicted Label\naccuracy={accuracy:0.4f}; misclass={misclass:0.4f}')
+    
+    if save_path:
+        try:
+            fig.savefig(save_path, bbox_inches='tight', dpi=200)
+        except Exception as e:
+            print(f"WARNING: {save_path}. Cause of: {e}")
+        finally:
+            plt.close(fig)
+    else:
+        plt.show()

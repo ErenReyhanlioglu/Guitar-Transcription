@@ -3,32 +3,49 @@ project_name: "Automatic_Guitar_Transcription"
 experiment_name: "TabCNN_GuitarSet_LogisticBank_v2"
 
 # ------------------ Dataset and Feature Definitions ------------------
-dataset: "GuitarSet" # "GuitarSet" or "SynthTab"
+dataset: "GuitarSet" 
 dataset_configs:
   GuitarSet:
-    drive_data_path: "/content/drive/MyDrive/Automatic Guitar Transcription/feature_extraction/segments_500frames_most_active_perfect/"
+    drive_data_path: "/content/drive/MyDrive/Automatic Guitar Transcription/feature_extraction/guitarset_all_npz/"
     local_data_path: "/content/local_guitarset_data/"
+    feature_to_file_map:
+      hcqt: "hcqt.npy"
+      mel: "mel.npy"
+      power: "power.npy"  
+
   SynthTab:
     drive_data_path: "/content/drive/MyDrive/Automatic Guitar Transcription/feature_extraction/synthtab_all_npz/most_active_frames/"
     local_data_path: "/content/local_synthtab_data/"
+    feature_to_file_map:
+      hcqt: "hcqt.npy"
+      mel: "melspec.npy"
+      power: "power.npy"
 
 feature_definitions:
   cqt: {key: "cqt", in_channels: 1, num_freq: 144}
   hcqt: {key: "hcqt", in_channels: 6, num_freq: 144}
   mel: {key: "mel", in_channels: 1, num_freq: 256}
+  power: {key: "power", in_channels: 1, num_freq: 1}
 
 # ------------------ Data Loading and Processing Parameters ------------------
 data:
-  active_preparation_mode: "framify" # 'framify' for TabCNN, 'windowing' for FretNet/Transformer
+  active_preparation_mode: "framify" 
   configurations:
-    windowing: {window_size: 200}
-    framify: {framify_window_size: 9}
-  
+    windowing: 
+      window_size: 200
+    framify: 
+      framify_chunk_size: 500
+      framify_window_size: 9
+
+  augmentation:
+    enabled: false  
+    time_masking_param: 30 
+    freq_masking_param: 24
+
   active_features: ["hcqt", "mel"]  
-  target_keys: ["tablature"]
+  target_keys: ["tablature"] # tablature, onsets, offsets
   batch_size: 4
   num_workers: 2
-  validation_split_size: 0.2
   random_state: 42
   hop_length: 512
   sample_rate: 22050
@@ -37,7 +54,7 @@ data:
 model:
   name: "TabCNN"
   params:
-    use_projection_layer: true    # Activates the projection layers for smart feature fusion.
+    use_projection_layer: true # Activates the projection layers for smart feature fusion.
     projection_output_size: 256 # The common dimension to project HCQT and Mel features into.
 
 # ------------------ Instrument Properties (Single Source of Truth) ------------------
@@ -55,7 +72,11 @@ loss:
   configurations:
     softmax_groups:
       type: "CustomSoftmaxTablatureLoss" # "CrossEntropyLoss" or "CustomSoftmaxTablatureLoss"
-      use_focal: true
+      custom_softmax_penalties: # bunlara std değerleri eklenecek base değerler arasında eğitim boyunca bu aralıkta dinamik bir şekilde belirlenecek losslar
+        miss: 1.0
+        false_alarm: 1.0
+        substitution: 1.0
+      use_focal: false
       focal_params:
         gamma: 2.0
       use_class_weights: true
@@ -75,6 +96,16 @@ loss:
     type: "BCEWithLogitsLoss"
     weight: 0.4    
 
+  onset_loss:
+    enabled: false
+    type: "BCEWithLogitsLoss"
+    weight: 0.4 
+
+  offset_loss:
+    enabled: false
+    type: "BCEWithLogitsLoss"
+    weight: 0.4 
+
 # ------------------ Training Parameters ------------------
 training:
   optimizer:
@@ -89,14 +120,14 @@ training:
       AdamW:
         differential_lr: true
         params:
-          backbone_lr: 0.0001 
+          backbone_lr: 0.0005 
           head_lr: 0.0005 
           weight_decay: 0.01
       
   scheduler:
     active_scheduler: "ReduceLROnPlateau" # "ReduceLROnPlateau", "StepLR", or "none"
     configurations:
-      ReduceLROnPlateau: {params: {monitor: "val_tab_f1", mode: "max", factor: 0.2, patience: 5, min_lr: 1.0e-6}}
+      ReduceLROnPlateau: {params: {monitor: "val_tab_f1_macro", mode: "max", factor: 0.2, patience: 5, min_lr: 1.0e-6}}
       StepLR: {params: {step_size: 10, gamma: 0.5}}
       
   epochs: 150
@@ -105,7 +136,7 @@ training:
   
   early_stopping:
     enabled: true
-    monitor: "val_tab_f1"
+    monitor: "val_tab_f1_macro"
     patience: 10
     min_delta: 0.0001
     mode: "max"
@@ -136,7 +167,7 @@ logging_and_checkpointing:
     src.trainer: "DEBUG"  
     src.data_loader: "INFO"  
     src.models.tabcnn: "DEBUG"
-    src.utils.losses: "DEBUG"  
+    src.utils.losses: "INFO"  
     src.utils.metrics: "INFO"
     src.utils.agt_tools: "INFO"
     src.utils.experiment: "INFO"

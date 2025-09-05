@@ -3,32 +3,49 @@ project_name: "Automatic_Guitar_Transcription"
 experiment_name: "FretNet_GuitarSet"
 
 # ------------------ Dataset and Feature Definitions ------------------
-dataset: "GuitarSet" # "GuitarSet" or "SynthTab"
+dataset: "GuitarSet" 
 dataset_configs:
   GuitarSet:
-    drive_data_path: "/content/drive/MyDrive/Automatic Guitar Transcription/feature_extraction/segments_500frames_most_active_perfect/"
+    drive_data_path: "/content/drive/MyDrive/Automatic Guitar Transcription/feature_extraction/guitarset_all_npz/"
     local_data_path: "/content/local_guitarset_data/"
+    feature_to_file_map:
+      hcqt: "hcqt.npy"
+      mel: "mel.npy"
+      power: "power.npy"  
+
   SynthTab:
     drive_data_path: "/content/drive/MyDrive/Automatic Guitar Transcription/feature_extraction/synthtab_all_npz/most_active_frames/"
     local_data_path: "/content/local_synthtab_data/"
+    feature_to_file_map:
+      hcqt: "hcqt.npy"
+      mel: "melspec.npy"
+      power: "power.npy"
 
 feature_definitions:
   cqt: {key: "cqt", in_channels: 1, num_freq: 144}
   hcqt: {key: "hcqt", in_channels: 6, num_freq: 144}
   mel: {key: "mel", in_channels: 1, num_freq: 256}
+  power: {key: "power", in_channels: 1, num_freq: 1}
 
 # ------------------ Data Loading and Processing Parameters ------------------
 data:
-  active_preparation_mode: "windowing" # 'framify' for TabCNN, 'windowing' for FretNet/Transformer
+  active_preparation_mode: "windowing" 
   configurations:
-    windowing: {window_size: 200}
-    framify: {framify_window_size: 9}
-  
+    windowing: 
+      window_size: 200
+    framify: 
+      framify_chunk_size: 500
+      framify_window_size: 9
+
+  augmentation:
+    enabled: false  
+    time_masking_param: 30 
+    freq_masking_param: 24
+
   active_features: ["hcqt", "mel"] 
   target_keys: ["tablature"]
   batch_size: 16
   num_workers: 2
-  validation_split_size: 0.2
   random_state: 42
   hop_length: 512
   sample_rate: 22050
@@ -43,11 +60,7 @@ model:
     use_auxiliary_head: true      # Activates the second output head for multipitch prediction.
     
     rnn_hidden_size: 128
-    rnn_num_layers: 2
-    d_model: 256
-    n_head: 8
-    num_encoder_layers: 6
-
+    rnn_num_layers: 1
 # ------------------ Instrument Properties (Single Source of Truth) ------------------
 instrument:
   tuning: [40, 45, 50, 55, 59, 64]
@@ -63,12 +76,16 @@ loss:
   configurations:
     softmax_groups:
       type: "CustomSoftmaxTablatureLoss" # "CrossEntropyLoss" or "CustomSoftmaxTablatureLoss"
-      use_focal: true
+      custom_softmax_penalties:
+        miss: 1.6 
+        false_alarm: 1.2
+        substitution: 1.0
+      use_focal: false
       focal_params:
         gamma: 2.0
       use_class_weights: true
       class_weights_params:
-        silence_factor: 0.6
+        silence_factor: 0.5 # 0.6 yap
 
     logistic_bank:
       type: "CustomLogisticTablatureLoss" # "BCEWithLogitsLoss" or "CustomLogisticTablatureLoss"
@@ -79,9 +96,19 @@ loss:
         alpha: 0.75 
 
   auxiliary_loss:
-    enabled: true
+    enabled: True
     type: "BCEWithLogitsLoss"
-    weight: 0.4        
+    weight: 0.4    
+
+  onset_loss:
+    enabled: false
+    type: "BCEWithLogitsLoss"
+    weight: 0.4 
+
+  offset_loss:
+    enabled: false
+    type: "BCEWithLogitsLoss"
+    weight: 0.4  
 
 # ------------------ Training Parameters ------------------
 training:
@@ -91,20 +118,20 @@ training:
       Adam: 
         differential_lr: true
         params:
-          backbone_lr: 0.0001 # lr for CNN
+          backbone_lr: 0.0005 # lr for CNN
           head_lr: 0.0005 # lr for RNN
           weight_decay: 0.0
       AdamW:
         differential_lr: true
         params:
-          backbone_lr: 0.0001 # lr for CNN
-          head_lr: 0.0005 # lr for RNN
+          backbone_lr: 0.0005 # lr for CNN
+          head_lr: 0.001 # lr for RNN
           weight_decay: 0.01
       
   scheduler:
     active_scheduler: "ReduceLROnPlateau" # "ReduceLROnPlateau", "StepLR", or "none"
     configurations:
-      ReduceLROnPlateau: {params: {monitor: "val_tab_f1", mode: "max", factor: 0.2, patience: 5, min_lr: 1.0e-6}}
+      ReduceLROnPlateau: {params: {monitor: "val_tab_f1_macro", mode: "max", factor: 0.2, patience: 5, min_lr: 1.0e-6}}
       StepLR: {params: {step_size: 10, gamma: 0.5}}
       
   epochs: 150
@@ -113,7 +140,7 @@ training:
   
   early_stopping:
     enabled: true
-    monitor: "val_tab_f1"
+    monitor: "val_tab_f1_macro"
     patience: 10
     min_delta: 0.0001
     mode: "max"
@@ -142,7 +169,7 @@ logging_and_checkpointing:
   log_levels:
     __main__: "INFO"
     src.trainer: "DEBUG" 
-    src.data_loader: "INFO" 
+    src.data_loader: "DEBUG" 
     src.models.fretnet: "DEBUG"
     src.utils.losses: "DEBUG" 
     src.utils.metrics: "INFO"

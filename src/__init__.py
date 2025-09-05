@@ -1,6 +1,6 @@
 ## {PROJECT_ROOT_PATH}/src/__init__.py
 from .trainer import Trainer
-from .data_loader import TablatureDataset, get_dataloaders
+from .data_loader import TablatureDataset, get_dataloaders_for_fold
 from .models import get_model
 from .utils.experiment import create_experiment_directory, save_model_summary
 from .utils.config_helpers import process_config

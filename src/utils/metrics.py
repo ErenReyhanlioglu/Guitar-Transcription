@@ -94,17 +94,22 @@ def compute_tablature_metrics(preds, targets, include_silence):
 
 def compute_multipitch_metrics(preds_tab, targets, profile):
     logger.debug(f"[mp_metrics] Inputs - preds_tab: {describe(preds_tab)}, targets: {describe(targets)}")
+    
     preds_tab_transposed = torch.from_numpy(preds_tab.cpu().numpy().T)
     targets_transposed = torch.from_numpy(targets.cpu().numpy().T)
+    
     preds_smp = tablature_to_stacked_multi_pitch(preds_tab_transposed, profile)
     targets_smp = tablature_to_stacked_multi_pitch(targets_transposed, profile)
     preds_mp = stacked_multi_pitch_to_multi_pitch(preds_smp)
     targets_mp = stacked_multi_pitch_to_multi_pitch(targets_smp)
+    
     preds_flat = preds_mp.flatten()
     targets_flat = targets_mp.flatten()
+    
     p = precision_score(targets_flat, preds_flat, average='binary', zero_division=0)
     r = recall_score(targets_flat, preds_flat, average='binary', zero_division=0)
     f1 = f1_score(targets_flat, preds_flat, average='binary', zero_division=0)
+    
     results = {'multipitch_f1': f1, 'multipitch_precision': p, 'multipitch_recall': r}
     logger.debug(f"[mp_metrics] Returning results: {describe(results)}")
     return results
@@ -158,23 +163,21 @@ def compute_octave_tolerant_metrics(preds_tab, targets_tab, tuning, silence_clas
     return {'octave_precision': p_w, 'octave_recall': r_w, 'octave_f1': f1_w,
             'octave_precision_macro': p_m, 'octave_recall_macro': r_m, 'octave_f1_macro': f1_m}
 
-def compute_tablature_error_scores(preds_flat, targets_flat, silence_class):
+def compute_tablature_error_scores(preds, targets, silence_class):
     """
     Calculates frame-wise tablature error scores based on predictions and targets.
-    All inputs are expected to be 1D NumPy arrays of fret numbers.
-    - Substitution: A non-silent note was predicted as a different non-silent note.
-    - Miss: A non-silent note was predicted as silence.
-    - False Alarm: A silence was predicted as a non-silent note.
+    All inputs are expected to be 2D Tensors/Arrays of shape (N, S).
     """
     logger.debug(f"[error_scores] Computing error scores...")
     
-    # Ensure inputs are NumPy arrays, not Tensors
-    if isinstance(preds_flat, torch.Tensor):
-        preds_flat = preds_flat.cpu().numpy()
-    if isinstance(targets_flat, torch.Tensor):
-        targets_flat = targets_flat.cpu().numpy()
+    if isinstance(preds, torch.Tensor):
+        preds_np = preds.cpu().numpy()
+    if isinstance(targets, torch.Tensor):
+        targets_np = targets.cpu().numpy()
 
-    # Total number of active (non-silent) frames in the ground truth
+    preds_flat = preds_np.flatten()
+    targets_flat = targets_np.flatten()
+
     n_ref = np.sum(targets_flat != silence_class)
 
     if n_ref == 0:
@@ -187,13 +190,8 @@ def compute_tablature_error_scores(preds_flat, targets_flat, silence_class):
             'tab_error_total': e_fa
         }
 
-    # 1. Miss Error: A note was present (target != silence), but silence was predicted.
     miss_error_frames = np.sum((targets_flat != silence_class) & (preds_flat == silence_class))
-    
-    # 2. False Alarm Error: Silence was present (target == silence), but a note was predicted.
     false_alarm_frames = np.sum((targets_flat == silence_class) & (preds_flat != silence_class))
-    
-    # 3. Substitution Error: A note was present, and a DIFFERENT non-silent note was predicted.
     substitution_error_frames = np.sum(
         (targets_flat != silence_class) & 
         (preds_flat != silence_class) & 
@@ -203,7 +201,6 @@ def compute_tablature_error_scores(preds_flat, targets_flat, silence_class):
     e_sub = substitution_error_frames / n_ref
     e_miss = miss_error_frames / n_ref
     e_fa = false_alarm_frames / n_ref
-    
     e_tot = e_sub + e_miss + e_fa
 
     results = {
