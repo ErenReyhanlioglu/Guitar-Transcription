@@ -8,7 +8,7 @@ from torch.cuda.amp import autocast, GradScaler
 from tqdm import tqdm
 
 from src.utils.logger import describe
-from src.utils.metrics import compute_tablature_metrics, compute_multipitch_metrics, compute_octave_tolerant_metrics, compute_tablature_error_scores
+from src.utils.metrics import compute_tablature_metrics, compute_multipitch_metrics, compute_octave_tolerant_metrics, compute_tablature_error_scores, compute_tdr 
 from src.utils.losses import CombinedLoss
 from src.utils.guitar_profile import GuitarProfile
 from src.utils.experiment import save_model_summary, generate_experiment_report
@@ -17,6 +17,20 @@ from src.utils.analyze_errors import analyze as run_error_analysis
 from src.utils.agt_tools import logistic_to_tablature
 
 logger = logging.getLogger(__name__)
+
+def convert_history_to_native_types(history):
+    """Recursively converts numpy types in a history dict to native Python types."""
+    if isinstance(history, dict):
+        return {k: convert_history_to_native_types(v) for k, v in history.items()}
+    elif isinstance(history, list):
+        return [convert_history_to_native_types(i) for i in history]
+    elif isinstance(history, np.integer):
+        return int(history)
+    elif isinstance(history, np.floating):
+        return float(history)
+    elif isinstance(history, np.ndarray):
+        return history.tolist()
+    return history
 
 class Trainer:
     def __init__(self, model, train_loader, val_loader, optimizer, scheduler, device, config, experiment_path, main_exp_path, class_weights=None, writer=None, initial_history=None):
@@ -62,13 +76,22 @@ class Trainer:
 
     def _create_empty_history(self):
         keys_with_phases = [
-            "loss_total", "loss_primary", "loss_aux", "loss_onset", "loss_offset",
+            "loss_total", "loss_primary", "loss_aux", "loss_onset", "loss_offset", "loss_activity",
+            
             "tab_f1", "tab_precision", "tab_recall",
             "tab_f1_macro", "tab_precision_macro", "tab_recall_macro", 
+            "tab_f1_weighted", "tab_precision_weighted", "tab_recall_weighted",
+            
             "mp_f1", "mp_precision", "mp_recall",
+            
             "octave_f1", "octave_precision", "octave_recall",
             "octave_f1_macro", "octave_precision_macro", "octave_recall_macro",
-            "tab_error_total", "tab_error_substitution", "tab_error_miss", "tab_error_false_alarm"
+            "octave_f1_weighted", "octave_precision_weighted", "octave_recall_weighted", 
+            
+            "tab_error_total", "tab_error_substitution", "tab_error_miss", "tab_error_false_alarm", "tab_error_duplicate_pitch",
+            "tab_error_total_count", "tab_error_substitution_count", "tab_error_miss_count", "tab_error_false_alarm_count", "tab_error_duplicate_pitch_count",
+            
+            "tdr"
         ]
         
         history = {f"{phase}_{key}": [] for phase in ["train", "val"] for key in keys_with_phases}
@@ -81,7 +104,7 @@ class Trainer:
     
     def _run_epoch(self, data_loader, is_training=True):
         self.model.train(is_training)
-        epoch_losses = {"total": 0.0, "primary": 0.0, "aux": 0.0, "onset": 0.0, "offset": 0.0}
+        epoch_losses = {"total": 0.0, "primary": 0.0, "aux": 0.0, "onset": 0.0, "offset": 0.0, "activity": 0.0}
         all_tab_logits_list, all_tab_targets_list = [], []
         
         desc = "Training" if is_training else "Validating"
@@ -94,9 +117,8 @@ class Trainer:
 
             with torch.set_grad_enabled(is_training):
                 self.optimizer.zero_grad(set_to_none=True)
-                with autocast(enabled=self.use_amp):
+                with autocast(enabled=self.use_amp):                    
                     model_output = self.model(**inputs)
-                    # loss_fn orijinal haliyle, maskesiz çağrılıyor
                     loss_dict = self.loss_fn(model_output, batch)
                     loss_to_backprop = loss_dict['total_loss']
                 
@@ -113,19 +135,14 @@ class Trainer:
             all_tab_logits_list.append(tab_logits.cpu().detach())
             all_tab_targets_list.append(batch['tablature'].cpu().detach())
 
-        # Metrik hesaplama fonksiyonu orijinal haliyle, maskesiz çağrılıyor
         epoch_metrics = self._calculate_all_metrics(all_tab_logits_list, all_tab_targets_list)
         
         num_batches = len(data_loader) if len(data_loader) > 0 else 1
-        epoch_metrics['loss_total'] = epoch_losses["total"] / num_batches
-        epoch_metrics['loss_primary'] = epoch_losses["primary"] / num_batches
-        epoch_metrics['loss_aux'] = epoch_losses["aux"] / num_batches
-        epoch_metrics['loss_onset'] = epoch_losses["onset"] / num_batches
-        epoch_metrics['loss_offset'] = epoch_losses["offset"] / num_batches
+        for key in epoch_losses.keys():
+            epoch_metrics[f'loss_{key}'] = epoch_losses[key] / num_batches
 
         return epoch_metrics
 
-    # _calculate_all_metrics orijinal haline döndürüldü
     def _calculate_all_metrics(self, logits_list, targets_list):
         all_logits = torch.cat(logits_list, dim=0)
         all_targets = torch.cat(targets_list, dim=0)
@@ -158,32 +175,65 @@ class Trainer:
         
         silence_class = self.instrument_config['silence_class'] 
 
-        # Metrik fonksiyonları orijinal haliyle, ignore_index olmadan çağrılıyor
-        tab_metrics_raw = compute_tablature_metrics(preds_to_use, targets_to_use, self.metrics_config.get('include_silence', False))
+        tab_metrics_raw = compute_tablature_metrics(preds_to_use, targets_to_use, self.metrics_config.get('include_silence', False), silence_class)
         mp_metrics_raw = compute_multipitch_metrics(preds_to_use, targets_to_use, self.guitar_profile)
         octave_metrics_raw = compute_octave_tolerant_metrics(preds_to_use, targets_to_use, self.instrument_config['tuning'], silence_class)
-        error_scores_raw = compute_tablature_error_scores(preds_to_use, targets_to_use, silence_class=silence_class)
+        error_scores_raw = compute_tablature_error_scores(
+            preds_to_use, 
+            targets_to_use, 
+            silence_class=silence_class,
+            tuning=self.instrument_config['tuning']
+        )
+
+        tdr_score = compute_tdr(
+            preds_to_use,
+            targets_to_use,
+            self.guitar_profile 
+        )
 
         final_metrics = {
+            # Tablature Metrics (Micro, Macro, Weighted)
             'tab_f1': tab_metrics_raw.get('overall_f1', 0.0),
             'tab_precision': tab_metrics_raw.get('overall_precision', 0.0),
             'tab_recall': tab_metrics_raw.get('overall_recall', 0.0),
             'tab_f1_macro': tab_metrics_raw.get('overall_f1_macro', 0.0),
             'tab_precision_macro': tab_metrics_raw.get('overall_precision_macro', 0.0),
             'tab_recall_macro': tab_metrics_raw.get('overall_recall_macro', 0.0),
+            'tab_f1_weighted': tab_metrics_raw.get('overall_f1_weighted', 0.0), 
+            'tab_precision_weighted': tab_metrics_raw.get('overall_precision_weighted', 0.0), 
+            'tab_recall_weighted': tab_metrics_raw.get('overall_recall_weighted', 0.0), 
+            
+            # Multi-pitch Metrics
             'mp_f1': mp_metrics_raw.get('multipitch_f1', 0.0),
             'mp_precision': mp_metrics_raw.get('multipitch_precision', 0.0),
             'mp_recall': mp_metrics_raw.get('multipitch_recall', 0.0),
+            
+            # Octave Tolerant Metrics (Micro, Macro, Weighted)
             'octave_f1': octave_metrics_raw.get('octave_f1', 0.0),
             'octave_precision': octave_metrics_raw.get('octave_precision', 0.0),
             'octave_recall': octave_metrics_raw.get('octave_recall', 0.0),
             'octave_f1_macro': octave_metrics_raw.get('octave_f1_macro', 0.0),
             'octave_precision_macro': octave_metrics_raw.get('octave_precision_macro', 0.0),
             'octave_recall_macro': octave_metrics_raw.get('octave_recall_macro', 0.0),
-            'tab_error_total': error_scores_raw.get('tab_error_total', 0.0),
-            'tab_error_substitution': error_scores_raw.get('tab_error_substitution', 0.0),
-            'tab_error_miss': error_scores_raw.get('tab_error_miss', 0.0),
-            'tab_error_false_alarm': error_scores_raw.get('tab_error_false_alarm', 0.0)
+            'octave_f1_weighted': octave_metrics_raw.get('octave_f1_weighted', 0.0), 
+            'octave_precision_weighted': octave_metrics_raw.get('octave_precision_weighted', 0.0), 
+            'octave_recall_weighted': octave_metrics_raw.get('octave_recall_weighted', 0.0), 
+            
+            # Tablature Error Scores
+            'tab_error_total': error_scores_raw.get('tab_error_total_rate', 0.0),
+            'tab_error_substitution': error_scores_raw.get('tab_error_substitution_rate', 0.0),
+            'tab_error_miss': error_scores_raw.get('tab_error_miss_rate', 0.0),
+            'tab_error_false_alarm': error_scores_raw.get('tab_error_false_alarm_rate', 0.0),
+            'tab_error_duplicate_pitch': error_scores_raw.get('tab_error_duplicate_pitch_rate', 0.0),
+
+            'tab_error_total_count': error_scores_raw.get('tab_error_total_count', 0),
+            'tab_error_substitution_count': error_scores_raw.get('tab_error_substitution_count', 0),
+            'tab_error_miss_count': error_scores_raw.get('tab_error_miss_count', 0),
+            'tab_error_false_alarm_count': error_scores_raw.get('tab_error_false_alarm_count', 0),
+            'tab_error_duplicate_pitch_count': error_scores_raw.get('tab_error_duplicate_pitch_count', 0),
+
+            # TDR
+            'tdr': tdr_score 
         }
         return final_metrics
         
@@ -239,28 +289,38 @@ class Trainer:
         
         log_message = (
             f"\n--- Epoch {epoch+1:02d}/{total_epochs} --- LR: {lr:.6f}\n"
-            f"Losses (Total)      | Train: {tm['loss_total']:.4f}, Validation: {vm['loss_total']:.4f}\n"
-            f"  └─ (P/A/On/Off)    | Train: {tm['loss_primary']:.3f}/{tm['loss_aux']:.3f}/{tm['loss_onset']:.3f}/{tm['loss_offset']:.3f} | Val: {vm['loss_primary']:.3f}/{vm['loss_aux']:.3f}/{vm['loss_onset']:.3f}/{vm['loss_offset']:.3f}\n"
-            f"------------------------------------------------------------------------------------------------------------------\n"
+            f"Losses (Total)          | Train: {tm['loss_total']:.4f}, Validation: {vm['loss_total']:.4f}\n"
+            f" └─ (P/A/Act/On/Off)   | Train: {tm.get('loss_primary', 0):.3f}/{tm.get('loss_aux', 0):.3f}/{tm.get('loss_activity', 0):.3f}/{tm.get('loss_onset', 0):.3f}/{tm.get('loss_offset', 0):.3f} "
+            f"| Val: {vm.get('loss_primary', 0):.3f}/{vm.get('loss_aux', 0):.3f}/{vm.get('loss_activity', 0):.3f}/{vm.get('loss_onset', 0):.3f}/{vm.get('loss_offset', 0):.3f}\n"
+            f"-------------------------------------------------------------------------------------------------------------------------------------\n"
             
             f"Tablature Metrics\n"
-            f" ├─ F1-Score    (W/M) | Train: {tm.get('tab_f1', 0):.4f} / {tm.get('tab_f1_macro', 0):.4f} | Val: {vm.get('tab_f1', 0):.4f} / {vm.get('tab_f1_macro', 0):.4f}\n"
-            f" ├─ Precision   (W/M) | Train: {tm.get('tab_precision', 0):.4f} / {tm.get('tab_precision_macro', 0):.4f} | Val: {vm.get('tab_precision', 0):.4f} / {vm.get('tab_precision_macro', 0):.4f}\n"
-            f" └─ Recall      (W/M) | Train: {tm.get('tab_recall', 0):.4f} / {tm.get('tab_recall_macro', 0):.4f} | Val: {vm.get('tab_recall', 0):.4f} / {vm.get('tab_recall_macro', 0):.4f}\n"
+            f" ├─ F1-Score  (Mic/W/Mac) | Train: {tm.get('tab_f1', 0):.4f}/{tm.get('tab_f1_weighted', 0):.4f}/{tm.get('tab_f1_macro', 0):.4f} | Val: {vm.get('tab_f1', 0):.4f}/{vm.get('tab_f1_weighted', 0):.4f}/{vm.get('tab_f1_macro', 0):.4f}\n"
+            f" ├─ Precision (Mic/W/Mac) | Train: {tm.get('tab_precision', 0):.4f}/{tm.get('tab_precision_weighted', 0):.4f}/{tm.get('tab_precision_macro', 0):.4f} | Val: {vm.get('tab_precision', 0):.4f}/{vm.get('tab_precision_weighted', 0):.4f}/{vm.get('tab_precision_macro', 0):.4f}\n"
+            f" └─ Recall    (Mic/W/Mac) | Train: {tm.get('tab_recall', 0):.4f}/{tm.get('tab_recall_weighted', 0):.4f}/{tm.get('tab_recall_macro', 0):.4f} | Val: {vm.get('tab_recall', 0):.4f}/{vm.get('tab_recall_weighted', 0):.4f}/{vm.get('tab_recall_macro', 0):.4f}\n"
             
             f"Multi-pitch Metrics\n"
-            f" ├─ F1-Score          | Train: {tm.get('mp_f1', 0):.4f} | Val: {vm.get('mp_f1', 0):.4f}\n"
-            f" ├─ Precision         | Train: {tm.get('mp_precision', 0):.4f} | Val: {vm.get('mp_precision', 0):.4f}\n"
-            f" └─ Recall            | Train: {tm.get('mp_recall', 0):.4f} | Val: {vm.get('mp_recall', 0):.4f}\n"
+            f" ├─ F1-Score            | Train: {tm.get('mp_f1', 0):.4f} | Val: {vm.get('mp_f1', 0):.4f}\n"
+            f" ├─ Precision           | Train: {tm.get('mp_precision', 0):.4f} | Val: {vm.get('mp_precision', 0):.4f}\n"
+            f" └─ Recall              | Train: {tm.get('mp_recall', 0):.4f} | Val: {vm.get('mp_recall', 0):.4f}\n"
+            
+            f"TDR (Disambiguation)\n"
+            f" └─ Score                 | Train: {tm.get('tdr', 0):.4f} | Val: {vm.get('tdr', 0):.4f}\n"
 
             f"Octave Tolerant Metrics\n"
-            f" ├─ F1-Score    (W/M) | Train: {tm.get('octave_f1', 0):.4f} / {tm.get('octave_f1_macro', 0):.4f} | Val: {vm.get('octave_f1', 0):.4f} / {vm.get('octave_f1_macro', 0):.4f}\n"
-            f" ├─ Precision   (W/M) | Train: {tm.get('octave_precision', 0):.4f} / {tm.get('octave_precision_macro', 0):.4f} | Val: {vm.get('octave_precision', 0):.4f} / {vm.get('octave_precision_macro', 0):.4f}\n"
-            f" └─ Recall      (W/M) | Train: {tm.get('octave_recall', 0):.4f} / {tm.get('octave_recall_macro', 0):.4f} | Val: {vm.get('octave_recall', 0):.4f} / {vm.get('octave_recall_macro', 0):.4f}\n"
+            f" ├─ F1-Score  (Mic/W/Mac) | Train: {tm.get('octave_f1', 0):.4f}/{tm.get('octave_f1_weighted', 0):.4f}/{tm.get('octave_f1_macro', 0):.4f} | Val: {vm.get('octave_f1', 0):.4f}/{vm.get('octave_f1_weighted', 0):.4f}/{vm.get('octave_f1_macro', 0):.4f}\n"
+            f" ├─ Precision (Mic/W/Mac) | Train: {tm.get('octave_precision', 0):.4f}/{tm.get('octave_precision_weighted', 0):.4f}/{tm.get('octave_precision_macro', 0):.4f} | Val: {vm.get('octave_precision', 0):.4f}/{vm.get('octave_precision_weighted', 0):.4f}/{vm.get('octave_precision_macro', 0):.4f}\n"
+            f" └─ Recall    (Mic/W/Mac) | Train: {tm.get('octave_recall', 0):.4f}/{tm.get('octave_recall_weighted', 0):.4f}/{tm.get('octave_recall_macro', 0):.4f} | Val: {vm.get('octave_recall', 0):.4f}/{vm.get('octave_recall_weighted', 0):.4f}/{vm.get('octave_recall_macro', 0):.4f}\n"
 
-            f"Tablature Error Scores\n"
-            f" ├─ E_sub/E_miss/E_fa | Train: {tm.get('tab_error_substitution', 0):.3f}/{tm.get('tab_error_miss', 0):.3f}/{tm.get('tab_error_false_alarm', 0):.3f} | Val: {vm.get('tab_error_substitution', 0):.3f}/{vm.get('tab_error_miss', 0):.3f}/{vm.get('tab_error_false_alarm', 0):.3f}\n"
-            f" └─ E_total           | Train: {tm.get('tab_error_total', 0):.3f} | Val: {vm.get('tab_error_total', 0):.3f}"
+            f"Tablature Error Scores (Rate (Count))\n"
+            f" ├─ E_sub/E_miss/E_fa   | Train: {tm.get('tab_error_substitution', 0):.3f} ({int(tm.get('tab_error_substitution_count', 0))}) / {tm.get('tab_error_miss', 0):.3f} ({int(tm.get('tab_error_miss_count', 0))}) / {tm.get('tab_error_false_alarm', 0):.3f} ({int(tm.get('tab_error_false_alarm_count', 0))}) "
+            f"| Val: {vm.get('tab_error_substitution', 0):.3f} ({int(vm.get('tab_error_substitution_count', 0))}) / {vm.get('tab_error_miss', 0):.3f} ({int(vm.get('tab_error_miss_count', 0))}) / {vm.get('tab_error_false_alarm', 0):.3f} ({int(vm.get('tab_error_false_alarm_count', 0))})\n"
+            
+            f" ├─ E_d.p (Duplicate)     | Train: {tm.get('tab_error_duplicate_pitch', 0):.3f} ({int(tm.get('tab_error_duplicate_pitch_count', 0))}) "
+            f"| Val: {vm.get('tab_error_duplicate_pitch', 0):.3f} ({int(vm.get('tab_error_duplicate_pitch_count', 0))})\n"
+            
+            f" └─ E_total               | Train: {tm.get('tab_error_total', 0):.3f} ({int(tm.get('tab_error_total_count', 0))}) "
+            f"| Val: {vm.get('tab_error_total', 0):.3f} ({int(vm.get('tab_error_total_count', 0))})"
         )
         logger.info(log_message)
 
@@ -276,23 +336,25 @@ class Trainer:
             torch.save(self.model.state_dict(), best_path)
             monitor_key = self.early_stopper.monitor if self.early_stopper else 'val_tab_f1'
             logger.info(f"New best model with {monitor_key}={best_val_metric:.4f} saved to: {best_path}")
-
+    
     def _finalize_training(self):
         logger.info("--- Training finished ---")
         if self.writer: self.writer.close()
         
         history_path = os.path.join(self.experiment_path, "history.json")
         try:
-            with open(history_path, 'w') as f: json.dump(self.history, f, indent=4)
+            native_history = convert_history_to_native_types(self.history)
+            with open(history_path, 'w') as f:
+                json.dump(native_history, f, indent=4)
             logger.info(f"Training history saved: {history_path}")
         except Exception as e:
             logger.error(f"Could not save history to {history_path}. Reason: {e}")
             
         try:
-            logger.info("Running final error analysis...")
+            logger.info("Running final error analysis for confusion matrices...")
             run_error_analysis(
                 experiment_path=self.experiment_path,
-                main_exp_path =self.main_exp_path,
+                main_exp_path=self.main_exp_path,
                 val_loader=self.val_loader
             )
         except Exception as e:
@@ -304,8 +366,8 @@ class Trainer:
         logger.info("Generating final experiment report...")
         try:
             generate_experiment_report(model=self.model, history=self.history, val_loader=self.val_loader,
-                                        config=self.config, experiment_path=self.experiment_path, device=self.device,
-                                        profile=self.guitar_profile)
+                                     config=self.config, experiment_path=self.experiment_path, device=self.device,
+                                     profile=self.guitar_profile)
         except Exception as e:
             logger.error(f"Could not generate experiment report. Reason: {e}", exc_info=True)
 

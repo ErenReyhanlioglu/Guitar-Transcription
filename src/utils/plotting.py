@@ -1,9 +1,12 @@
+import matplotlib
 import matplotlib.pyplot as plt
 import numpy as np
 import itertools
 from pathlib import Path
+import matplotlib.patches as mpatches 
 from matplotlib.patches import Rectangle
-import matplotlib
+from matplotlib.colors import ListedColormap, BoundaryNorm
+from scipy import ndimage 
 
 matplotlib.use('Agg')
 
@@ -166,6 +169,133 @@ def plot_guitar_tablature(tab_data, hop_seconds, save_path, title='Guitar Tablat
     ax.set_ylim(-0.5, num_strings - 0.5)
     ax.set_xlim(0, duration_seconds)
     ax.grid(axis='x', linestyle='--', alpha=0.6)
+    plt.tight_layout()
+    Path(save_path).parent.mkdir(parents=True, exist_ok=True)
+    plt.savefig(save_path, dpi=300)
+    plt.close()
+
+def plot_tablature_errors(preds_np, targets_np, hop_seconds, silence_class, save_path, title="Tablature Error Visualization"):
+    """
+    Tablature hatalarını (Miss, False Alarm, Substitution) nota bazlı olarak gruplayarak görselleştirir.
+    Art arda gelen aynı perde numaraları tek bir etiketle gösterilir.
+    """
+    if preds_np.shape[1] > preds_np.shape[0]:
+        preds_np = preds_np.T
+    if targets_np.shape[1] > targets_np.shape[0]:
+        targets_np = targets_np.T
+
+    fig, ax = plt.subplots(figsize=(20, 8))
+    num_frames, num_strings = targets_np.shape
+    duration_seconds = num_frames * hop_seconds
+
+    colors = {
+        "TP": "green",
+        "FN": "red",
+        "FP": "blue",
+        "SUB": "purple"
+    }
+
+    for s in range(num_strings):
+        preds_s, targets_s = preds_np[:, s], targets_np[:, s]
+
+        is_tp = (preds_s == targets_s) & (targets_s != silence_class)
+        is_fn = (preds_s == silence_class) & (targets_s != silence_class)
+        is_fp = (preds_s != silence_class) & (targets_s == silence_class)
+        is_sub = (preds_s != targets_s) & (preds_s != silence_class) & (targets_s != silence_class)
+
+        for error_type, mask in [("TP", is_tp), ("FN", is_fn), ("FP", is_fp), ("SUB", is_sub)]:
+            if not np.any(mask): continue
+            
+            labels, num_labels = ndimage.label(mask)
+            
+            for i in range(1, num_labels + 1):
+                segment_indices = np.where(labels == i)[0]
+                if len(segment_indices) == 0: continue
+
+                start_frame, end_frame = segment_indices[0], segment_indices[-1]
+                start_time, end_time = start_frame * hop_seconds, (end_frame + 1) * hop_seconds
+                
+                text_time_pos = (start_time + end_time) / 2
+                
+                #ax.hlines(s, start_time, end_time, color=colors[error_type], linewidth=5, solid_capstyle='butt')
+                ax.hlines(s, start_time, end_time, color=colors[error_type], linewidth=5, capstyle='butt') 
+
+                if error_type == "TP":
+                    fret = targets_s[start_frame]
+                    ax.text(text_time_pos, s, str(fret), color='white', ha='center', va='center', fontsize=7, weight='bold')
+                elif error_type == "FN":
+                    fret = targets_s[start_frame]
+                    ax.text(text_time_pos, s - 0.1, str(fret), color=colors[error_type], ha='center', va='top', fontsize=8)
+                elif error_type == "FP":
+                    fret = preds_s[start_frame]
+                    ax.text(text_time_pos, s + 0.1, str(fret), color=colors[error_type], ha='center', va='bottom', fontsize=8)
+                elif error_type == "SUB":
+                    pred_fret = preds_s[start_frame]
+                    target_fret = targets_s[start_frame]
+                    ax.text(text_time_pos, s + 0.1, str(pred_fret), color=colors[error_type], ha='center', va='bottom', fontsize=8)
+                    ax.text(text_time_pos, s - 0.1, f"({target_fret})", color='orange', ha='center', va='top', fontsize=8)
+
+    ax.set_title(title, fontsize=16)
+    ax.set_xlabel('Zaman (s)', fontsize=12)
+    ax.set_ylabel('Gitar Teli', fontsize=12)
+    ax.set_yticks(range(num_strings))
+    ax.set_yticklabels([f'Tel {num_strings-i}' for i in range(num_strings)]) 
+    ax.set_ylim(-0.5, num_strings - 0.5)
+    ax.set_xlim(0, duration_seconds)
+    ax.grid(axis='x', linestyle='--', alpha=0.6)
+    
+    legend_patches = [
+        mpatches.Patch(color=colors['TP'], label='TP'),
+        mpatches.Patch(color=colors['FN'], label='FN/Miss'),
+        mpatches.Patch(color=colors['FP'], label='FP/FA'),
+        mpatches.Patch(color=colors['SUB'], label='SUB')
+    ]
+    ax.legend(handles=legend_patches, bbox_to_anchor=(1.01, 1), loc='upper left', borderaxespad=0.)
+    
+    plt.tight_layout(rect=[0, 0, 0.9, 1]) # Lejant için yer aç
+    Path(save_path).parent.mkdir(parents=True, exist_ok=True)
+    plt.savefig(save_path, dpi=200, bbox_inches='tight')
+    plt.close()
+
+def plot_pianoroll_errors(pred_pianoroll, target_pianoroll, hop_seconds, save_path, low_midi=21, title="Pianoroll Error Visualization"):
+    """
+    Pianoroll hatalarını (Miss, False Alarm) bir heatmap olarak görselleştirir.
+    """
+    fig, ax = plt.subplots(figsize=(16, 6))
+    
+    # Hata matrisini oluştur:
+    # 0: True Negative (Doğru sessizlik) - Beyaz
+    # 1: True Positive (Doğru nota) - Yeşil
+    # 2: False Negative (Miss - Kaçırılan) - Kırmızı
+    # 3: False Positive (False Alarm - Yanlış Alarm) - Mavi
+    error_matrix = np.zeros_like(target_pianoroll, dtype=int)
+    error_matrix[ (target_pianoroll == 1) & (pred_pianoroll == 1) ] = 1 # TP
+    error_matrix[ (target_pianoroll == 1) & (pred_pianoroll == 0) ] = 2 # FN (Miss)
+    error_matrix[ (target_pianoroll == 0) & (pred_pianoroll == 1) ] = 3 # FP (False Alarm)
+    
+    # Renk haritası ve sınırlar
+    cmap = ListedColormap(['#FFFFFF', 'green', 'red', 'blue'])
+    bounds = [-0.5, 0.5, 1.5, 2.5, 3.5]
+    norm = BoundaryNorm(bounds, cmap.N)
+    
+    # Çizim
+    num_pitches, num_frames = target_pianoroll.shape
+    duration_seconds = num_frames * hop_seconds
+    extent = [0, duration_seconds, low_midi - 0.5, low_midi + num_pitches - 0.5]
+    
+    ax.imshow(error_matrix, aspect='auto', origin='lower', cmap=cmap, norm=norm, extent=extent, interpolation='nearest')
+    
+    ax.set_title(title, fontsize=16)
+    ax.set_xlabel('Zaman (s)', fontsize=12)
+    ax.set_ylabel('MIDI Notası', fontsize=12)
+    
+    legend_patches = [
+        mpatches.Patch(color='green', label='TP'),
+        mpatches.Patch(color='red', label='FN/Miss'),
+        mpatches.Patch(color='blue', label='FP/FA')
+    ]
+    ax.legend(handles=legend_patches, bbox_to_anchor=(1.02, 1), loc='upper left')
+
     plt.tight_layout()
     Path(save_path).parent.mkdir(parents=True, exist_ok=True)
     plt.savefig(save_path, dpi=300)

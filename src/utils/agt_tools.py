@@ -158,12 +158,10 @@ def tablature_to_stacked_multi_pitch(tablature, profile):
     logger.debug(f"[tab_to_smp] Fonksiyon başlatıldı. Gelen tablature: {describe(tablature)}")
     is_tensor = isinstance(tablature, torch.Tensor)
 
-    # Fonksiyonun (..., Tel Sayısı, Zaman) formatında çalışmasını garantile
     if tablature.shape[-1] < tablature.shape[-2]:
         logger.debug(f"[tab_to_smp] Boyutlar (..., T, S) formatında. (..., S, T) formatına çevriliyor.")
         tablature = tablature.transpose(-1, -2) if is_tensor else np.swapaxes(tablature, -1, -2)
 
-    # Batch boyutu ekle (eğer yoksa)
     original_dims = tablature.dim() if is_tensor else tablature.ndim
     if original_dims == 2:
         tablature = tablature.unsqueeze(0) if is_tensor else np.expand_dims(tablature, axis=0)

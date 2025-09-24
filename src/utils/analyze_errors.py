@@ -75,7 +75,7 @@ def analyze(experiment_path: str, main_exp_path: str, val_loader: DataLoader = N
                 tab_logits = model_output['tab_logits']
                 
                 preds_tab = None
-                if tab_logits.dim() == 4: # FretNet/Transformer (B, T, S, C)
+                if tab_logits.dim() == 4: # FretNet (B, T, S, C)
                     preds_tab = torch.argmax(tab_logits.permute(0, 2, 1, 3), dim=-1)
                 elif tab_logits.dim() == 2: # TabCNN (B*T, S*C)
                     preds_tab = torch.argmax(tab_logits.view(-1, num_strings, num_classes), dim=-1)

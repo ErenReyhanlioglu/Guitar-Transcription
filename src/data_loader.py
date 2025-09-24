@@ -113,7 +113,9 @@ class TablatureDataset(Dataset):
                 if npz_key not in data:
                     raise KeyError(f"Feature key '{npz_key}' (from '{feature_key}') not found in {path}.")
                 feature_data = data[npz_key].astype(np.float32)
-                if feature_data.ndim == 4 and feature_data.shape[0] == 1:
+                if feature_key == 'power' and feature_data.ndim == 1:
+                    feature_data = feature_data[np.newaxis, np.newaxis, :] # (T,) -> (1, 1, T)
+                elif feature_data.ndim == 4 and feature_data.shape[0] == 1:
                     feature_data = feature_data.squeeze(0)
                 features_dict[feature_key] = torch.from_numpy(feature_data.copy())
             
@@ -124,11 +126,21 @@ class TablatureDataset(Dataset):
                     tab_tensor = torch.from_numpy(tab_data.copy())
                     tab_tensor[tab_tensor == -1] = self.silence_class
                     targets_dict['tablature'] = tab_tensor
-                elif key in ['onsets', 'offsets']:
-                    target_data_pitch_wise = data[key].astype(np.float32)
-                    target_data_per_string = np.any(target_data_pitch_wise, axis=1).astype(np.float32)
-                    new_key = f"{key.rstrip('s')}_target"
-                    targets_dict[new_key] = torch.from_numpy(target_data_per_string.copy())
+                
+                elif key == 'onsets':                
+                    onset_data_pitch_wise = data[key].astype(np.float32) # pitch-wise                    
+                    onset_data_per_string = np.any(onset_data_pitch_wise, axis=1).astype(np.float32) # (S, T)                    
+                    activity_target_np = np.any(onset_data_per_string, axis=0).astype(np.float32) # (T,)
+                    targets_dict['activity_target'] = torch.from_numpy(activity_target_np.copy())
+                    
+                    if 'onset_loss' in self.loss_config and self.loss_config['onset_loss'].get('enabled', False):
+                        targets_dict['onset_target'] = torch.from_numpy(onset_data_per_string.copy())
+
+                elif key == 'offsets':
+                    if 'offset_loss' in self.loss_config and self.loss_config['offset_loss'].get('enabled', False):
+                        offset_data_pitch_wise = data[key].astype(np.float32)
+                        offset_data_per_string = np.any(offset_data_pitch_wise, axis=1).astype(np.float32)
+                        targets_dict['offset_target'] = torch.from_numpy(offset_data_per_string.copy())
 
             data.close()
 
@@ -230,11 +242,8 @@ def collate_fn(batch: list[dict], config: dict) -> dict:
         pad_amount = framify_win_size // 2
 
         for key in feature_keys:
-            tensor_batch = torch.stack([sample['features'][key] for sample in batch])
-            
-            # <<< DEĞİŞİKLİK BURADA: 'replicate' yerine 'constant' kullanıyoruz.
+            tensor_batch = torch.stack([sample['features'][key] for sample in batch])            
             tensor_padded_window = F.pad(tensor_batch, (pad_amount, pad_amount), 'constant', 0)
-            
             unfolded = tensor_padded_window.unfold(3, framify_win_size, 1)
             unfolded = unfolded.permute(0, 3, 1, 2, 4)
             B, T, C, F_bins, W = unfolded.shape
@@ -242,14 +251,13 @@ def collate_fn(batch: list[dict], config: dict) -> dict:
 
     collated_batch['features'] = collated_features
 
-    # Process target keys
     target_keys = [k for k in batch[0].keys() if k != 'features']
     for key in target_keys:
         tensors_to_stack = [sample[key] for sample in batch]
         
         final_tensor = torch.stack(tensors_to_stack)
 
-        if preparation_mode == 'framify' and key in ['tablature', 'multipitch_target', 'onset_target', 'offset_target']:
+        if preparation_mode == 'framify' and key in ['tablature', 'multipitch_target', 'onset_target', 'offset_target', 'activity_target']:
             if final_tensor.ndim == 3: # (B, Channels, Time) -> (B*T, Channels)
                 reshaped_target = final_tensor.permute(0, 2, 1).reshape(-1, final_tensor.shape[1])
             else: # (B, Time) -> (B*T)
@@ -289,11 +297,11 @@ def prepare_dataset_files(config: dict) -> tuple[np.ndarray, list[str]]:
     return all_npz_paths, groups
 
 
-def get_dataloaders_for_fold(config: dict, train_paths: list[str], val_paths: list[str], zero_shot_map: dict = None) -> tuple[DataLoader, DataLoader]:
+def get_dataloaders(config: dict, train_paths: list[str], val_paths: list[str], test_paths: list[str], zero_shot_map: dict = None) -> tuple[DataLoader, DataLoader, DataLoader]:
     """
-    Creates and returns the training and validation DataLoaders for a specific fold.
+    Creates and returns the training, validation, AND test DataLoaders for a specific split.
     """
-    logger.info("Initializing train and validation datasets for the current fold...")
+    logger.info("Initializing train, validation, and test datasets for the current fold...")
     
     data_conf = config['data']
     is_augment_enabled = data_conf.get('augmentation', {}).get('enabled', False)
@@ -316,6 +324,15 @@ def get_dataloaders_for_fold(config: dict, train_paths: list[str], val_paths: li
         drop_last=True, collate_fn=collate_with_config   
     )
     
-    logger.info(f"DataLoaders created. Training batches: {len(train_loader)}, Validation batches: {len(val_loader)}.")
+    test_dataset = TablatureDataset(test_paths, config, augment=False, zero_shot_map=None)
+    test_loader = DataLoader(
+        test_dataset, batch_size=data_conf['batch_size'], shuffle=False,
+        num_workers=data_conf.get('num_workers', 0),
+        pin_memory=data_conf.get('num_workers', 0) > 0,
+        drop_last=False, 
+        collate_fn=collate_with_config
+    )
     
-    return train_loader, val_loader
+    logger.info(f"DataLoaders created. Training batches: {len(train_loader)}, Validation batches: {len(val_loader)}, Test batches: {len(test_loader)}.")
+    
+    return train_loader, val_loader, test_loader

@@ -49,11 +49,7 @@ class BinaryFocalLoss(nn.Module):
             return focal_loss
 
 class CustomSoftmaxTablatureLoss(nn.Module):
-    """
-    Hata türüne (Miss, False Alarm, Substitution) göre farklı cezalar
-    uygulayan özel bir Cross-Entropy loss fonksiyonu.
-    """
-    def __init__(self, miss_penalty=1.5, false_alarm_penalty=1.5, substitution_penalty=1.0, 
+    def __init__(self, miss_penalty=1.0, false_alarm_penalty=1.0, substitution_penalty=1.0, 
                  silence_class=20, ignore_index=-1):
         super().__init__()
         self.miss_penalty = miss_penalty
@@ -108,14 +104,11 @@ class CustomPenalizedFocalLoss(nn.Module):
         if not valid_mask.any(): return torch.tensor(0.0).to(preds.device)
         preds, targets = preds[valid_mask], targets[valid_mask]
 
-        # 1. Temel Cross-Entropy loss'u hesapla
         ce_loss = F.cross_entropy(preds, targets, weight=class_weights, reduction='none')
 
-        # 2. Focal Loss ağırlığını (pt) hesapla
         pt = torch.exp(-ce_loss)
         focal_term = (1 - pt) ** self.gamma
 
-        # 3. Özel ceza ağırlıklarını hesapla
         with torch.no_grad():
             pred_classes = torch.argmax(preds, dim=1)
             miss_mask = (targets != self.silence_class) & (pred_classes == self.silence_class)
@@ -126,7 +119,6 @@ class CustomPenalizedFocalLoss(nn.Module):
             penalties[fa_mask] = self.false_alarm_penalty
             penalties[sub_mask] = self.substitution_penalty
 
-        # 4. Tüm bileşenleri birleştir
         final_loss = penalties * focal_term * ce_loss
         return final_loss.mean()
 
@@ -176,7 +168,7 @@ class CombinedLoss(nn.Module):
             logger.info(f"CombinedLoss initialized with class weights of shape: {self.class_weights.shape}")
 
         self.primary_loss_fn = self._create_primary_loss()
-        self._setup_auxiliary_losses()
+        self._setup_helper_losses()
 
     def _create_primary_loss(self):
         loss_type = self.active_loss_config.get('type')
@@ -191,7 +183,6 @@ class CombinedLoss(nn.Module):
         focal_params = self.active_loss_config.get('focal_params', {})
         silence_cls = self.instrument_config['silence_class']
 
-        # 1. BİRLEŞİK DURUM: Özel cezalar VE Focal Loss bir arada
         if loss_type == "CustomSoftmaxTablatureLoss" and use_focal:
             logger.info("--> Activating COMBINED loss: CustomPenalizedFocalLoss")
             return CustomPenalizedFocalLoss(
@@ -203,7 +194,6 @@ class CombinedLoss(nn.Module):
                 ignore_index=-1
             )
         
-        # 2. SADECE ÖZEL CEZA DURUMU
         elif loss_type == "CustomSoftmaxTablatureLoss":
             logger.info("--> Activating penalty-based loss: CustomSoftmaxTablatureLoss")
             return CustomSoftmaxTablatureLoss(
@@ -214,7 +204,6 @@ class CombinedLoss(nn.Module):
                 ignore_index=-1
             )
 
-        # 3. SADECE FOCAL LOSS DURUMU
         elif use_focal:
             logger.info("--> Activating standard Focal Loss: MultiClassFocalLoss")
             return MultiClassFocalLoss(
@@ -222,7 +211,6 @@ class CombinedLoss(nn.Module):
                 ignore_index=-1
             )
         
-        # 4. VARSAYILAN DURUM: Standart Cross Entropy
         elif loss_type == "CrossEntropyLoss":
             logger.info("--> Activating default loss: CrossEntropyLoss")
             return nn.CrossEntropyLoss(ignore_index=-1)
@@ -231,100 +219,115 @@ class CombinedLoss(nn.Module):
             raise ValueError(f"Unsupported loss type or combination for softmax_groups: {loss_type} with use_focal={use_focal}")
 
     def _create_helper_loss(self, loss_key: str):
-        """Yardımcı görevler için loss fonksiyonu oluşturur."""
+        """Yardımcı görevler (aux, activity, onset, offset) için loss fonksiyonu oluşturur."""
         loss_config = self.loss_config.get(loss_key, {})
-        loss_type = loss_config.get('type', 'BCEWithLogitsLoss')
+        loss_type = loss_config.get('type')
+        
+        if not loss_type:
+             raise ValueError(f"Loss type for '{loss_key}' must be specified in the config.")
+
         logger.info(f"Creating helper loss '{loss_key}' of type: '{loss_type}'")
+        
         if loss_type == "BCEWithLogitsLoss":
             return nn.BCEWithLogitsLoss()
         else:
             raise ValueError(f"Unsupported helper loss type: {loss_type}")
 
-    def _setup_auxiliary_losses(self):
+    def _setup_helper_losses(self):
         """Tüm yardımcı loss'ları config'e göre ayarlar."""
+        # Auxiliary Loss
         self.aux_enabled = self.loss_config.get('auxiliary_loss', {}).get('enabled', False)
         if self.aux_enabled:
             self.auxiliary_loss_fn = self._create_helper_loss('auxiliary_loss')
-            self.aux_weight = self.loss_config.get('auxiliary_loss', {}).get('weight', 0.4)
+            self.aux_weight = self.loss_config['auxiliary_loss'].get('weight')
+            logger.info(f"Enabled helper loss: auxiliary_loss with weight {self.aux_weight}")
 
+        # Activity Loss
+        self.activity_enabled = self.loss_config.get('activity_loss', {}).get('enabled', False)
+        if self.activity_enabled:
+            self.activity_loss_fn = self._create_helper_loss('activity_loss')
+            self.activity_weight = self.loss_config['activity_loss'].get('weight')
+            logger.info(f"Enabled helper loss: activity_loss with weight {self.activity_weight}")
+
+        # Onset Loss
         self.onset_enabled = self.loss_config.get('onset_loss', {}).get('enabled', False)
         if self.onset_enabled:
             self.onset_loss_fn = self._create_helper_loss('onset_loss')
-            self.onset_weight = self.loss_config.get('onset_loss', {}).get('weight', 0.5)
+            self.onset_weight = self.loss_config['onset_loss'].get('weight')
+            logger.info(f"Enabled helper loss: onset_loss with weight {self.onset_weight}")
 
+        # Offset Loss
         self.offset_enabled = self.loss_config.get('offset_loss', {}).get('enabled', False)
         if self.offset_enabled:
             self.offset_loss_fn = self._create_helper_loss('offset_loss')
-            self.offset_weight = self.loss_config.get('offset_loss', {}).get('weight', 0.5)
+            self.offset_weight = self.loss_config['offset_loss'].get('weight')
+            logger.info(f"Enabled helper loss: offset_loss with weight {self.offset_weight}")
     
     def forward(self, model_output: dict, batch: dict) -> dict:
-        # --- 1. Birincil (Primary) Loss Hesaplaması ---
-        tab_logits = model_output['tab_logits']
-        tablature_target = batch['tablature']
+        loss_dict = {}
 
-        if self.active_loss_strategy == 'softmax_groups':
-            S = self.instrument_config['num_strings']
-            C = self.config['model']['params']['num_classes']
+        tab_logits = model_output.get('tab_logits')
+        tablature_target = batch.get('tablature')
+        
+        primary_loss = torch.tensor(0.0, device=tab_logits.device)
 
-            if tab_logits.dim() == 4: # FretNet gibi dinamik model çıktısı: (B, T, S, C)
-                # Hedef verisini (B, S, T) -> (B*T, S) formatına dönüştür.
-                # 'permute' işleminden sonra 'view' yerine 'reshape' kullanmak daha güvenlidir.
-                tablature_target_reshaped = tablature_target.permute(0, 2, 1).reshape(-1, S)
-                
-                # Logits'i (B*T, S, C) formatına dönüştür
-                logits_reshaped = tab_logits.reshape(-1, S, C)
+        if tab_logits is not None and tablature_target is not None:
+            if self.active_loss_strategy == 'softmax_groups':
+                S = self.instrument_config['num_strings']
+                C = self.config['model']['params']['num_classes']
 
-            elif tab_logits.dim() == 2: # TabCNN gibi statik model çıktısı: (B*T, S*C)
-                # Logits'i (B*T, S, C) formatına dönüştür
-                logits_reshaped = tab_logits.reshape(-1, S, C)
-                # Hedef veri (B*T, S) olarak geldiği varsayılır.
-                tablature_target_reshaped = tablature_target
-            else:
-                raise ValueError(f"Desteklenmeyen 'tab_logits' boyutu: {tab_logits.dim()}")
-            
-            total_string_loss = 0.0
-            use_class_weights = self.active_loss_config.get('use_class_weights', False)
-
-            for s in range(S):
-                pred_s = logits_reshaped[:, s, :]
-                target_s = tablature_target_reshaped[:, s]
-
-                class_weights_s = None
-                if use_class_weights and self.class_weights is not None:
-                    class_weights_s = self.class_weights[s].to(pred_s.device)
-
-                if isinstance(self.primary_loss_fn, nn.CrossEntropyLoss):
-                    loss_calculator = nn.CrossEntropyLoss(weight=class_weights_s, ignore_index=-1)
-                    total_string_loss += loss_calculator(pred_s, target_s)
+                if tab_logits.dim() == 4:
+                    tablature_target_reshaped = tablature_target.permute(0, 2, 1).reshape(-1, S)
+                    logits_reshaped = tab_logits.reshape(-1, S, C)
+                elif tab_logits.dim() == 2:
+                    logits_reshaped = tab_logits.reshape(-1, S, C)
+                    tablature_target_reshaped = tablature_target
                 else:
-                    # Özel kayıp fonksiyonları için class_weights parametresini aktar
+                    raise ValueError(f"Unsupported 'tab_logits' dimension: {tab_logits.dim()}")
+                
+                total_string_loss = 0.0
+                use_class_weights = self.active_loss_config.get('use_class_weights', False)
+                for s in range(S):
+                    pred_s = logits_reshaped[:, s, :]
+                    target_s = tablature_target_reshaped[:, s]
+                    
+                    class_weights_s = None
+                    if use_class_weights and self.class_weights is not None:
+                        class_weights_s = self.class_weights[s].to(pred_s.device)
+                    
                     total_string_loss += self.primary_loss_fn(pred_s, target_s, class_weights=class_weights_s)
-            
-            primary_loss = total_string_loss / S
-        else:
-            # Diğer loss stratejileri için (örneğin 'logistic_bce')
-            primary_loss = self.primary_loss_fn(tab_logits, tablature_target)
+                
+                primary_loss = total_string_loss / S
+            else:
+                primary_loss = self.primary_loss_fn(tab_logits, tablature_target)
 
-        # --- 2. Yardımcı (Auxiliary) Loss Hesaplamaları ve Toplam Loss'un Oluşturulması ---
+        loss_dict['primary_loss'] = primary_loss.detach()
         total_loss = primary_loss
-        loss_dict = {"primary_loss": primary_loss.detach()}
 
         if self.aux_enabled and 'multipitch_logits' in model_output:
             multipitch_logits = model_output['multipitch_logits']
             multipitch_target = batch['multipitch_target']
             
-            # Aux loss için boyutları eşleştir
-            if multipitch_logits.dim() == 3 and multipitch_target.dim() == 3:
-                # Logits boyutu (B, T, C_p) ise, hedefi (B, C_p, T) yap.
-                # BCEWithLogitsLoss'un beklediği format (N, C) şeklindedir.
-                # Bu nedenle permute gerekebilir.
-                if multipitch_logits.shape[1] != multipitch_target.shape[1]:
-                    multipitch_target = multipitch_target.permute(0, 2, 1)
-            
+            if multipitch_logits.shape != multipitch_target.shape:
+                if multipitch_target.numel() == multipitch_logits.numel():
+                    multipitch_target = multipitch_target.reshape(multipitch_logits.shape)
+
             aux_loss = self.auxiliary_loss_fn(multipitch_logits, multipitch_target)
             total_loss += self.aux_weight * aux_loss
             loss_dict['aux_loss'] = aux_loss.detach()
-                
+            
+        if self.activity_enabled and 'activity_logits' in model_output:
+            activity_logits = model_output['activity_logits']
+            activity_target = batch['activity_target']
+            
+            if activity_logits.shape != activity_target.shape:
+                if activity_target.numel() == activity_logits.numel():
+                    activity_target = activity_target.reshape(activity_logits.shape)
+            
+            activity_loss = self.activity_loss_fn(activity_logits, activity_target)
+            total_loss += self.activity_weight * activity_loss
+            loss_dict['activity_loss'] = activity_loss.detach()
+
         if self.onset_enabled and 'onset_logits' in model_output:
             onset_logits = model_output['onset_logits']
             onset_target = batch['onset_target']
