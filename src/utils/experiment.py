@@ -6,6 +6,7 @@ import io
 import shutil
 import subprocess
 import sys
+import datetime 
 from contextlib import redirect_stdout
 from pathlib import Path
 import logging
@@ -20,27 +21,24 @@ from src.utils.plotting import (
     plot_guitar_tablature, plot_pianoroll, plot_binary_activation,
     plot_tablature_errors, plot_pianoroll_errors  
 )
-from src.utils.agt_tools import tablature_to_stacked_multi_pitch, stacked_multi_pitch_to_multi_pitch, logistic_to_tablature
+from src.utils.agt_tools import tablature_to_stacked_multi_pitch, stacked_multi_pitch_to_multi_pitch
 from src.utils.guitar_profile import GuitarProfile
 
 logger = logging.getLogger(__name__)
 
 def create_experiment_directory(base_output_path: str, model_name: str, config: dict, config_path: str) -> str:
+    """
+    Creates an experiment directory named with the format: ModelName_YYYYMMDD_HHMMSS
+    Example: outputs/CNN_MTL_20231027_143000
+    """
+    timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
+    dir_name = f"{model_name}_{timestamp}"
+    
     pretrained_path = config.get('training', {}).get('pretrained_model_path')
     if pretrained_path and os.path.exists(pretrained_path):
-        pretrain_exp_path = Path(pretrained_path).resolve().parent
-        if pretrain_exp_path.name.endswith("checkpoints"):
-            pretrain_exp_path = pretrain_exp_path.parent 
-        base_path_for_versioning = os.path.join(pretrain_exp_path, "finetune")
+        experiment_path = os.path.join(os.path.dirname(base_output_path), "finetune", dir_name)
     else:
-        base_path_for_versioning = os.path.join(base_output_path, model_name)
-    
-    os.makedirs(base_path_for_versioning, exist_ok=True)
-    
-    existing_versions = [int(d[1:]) for d in os.listdir(base_path_for_versioning) if d.startswith('V') and d[1:].isdigit()]
-    next_version = max(existing_versions) + 1 if existing_versions else 0
-    exp_dir_name = f"V{next_version}"
-    experiment_path = os.path.join(base_path_for_versioning, exp_dir_name)
+        experiment_path = os.path.join(base_output_path, dir_name)
     
     os.makedirs(experiment_path, exist_ok=True)
     logger.info(f"Experiment directory created: {experiment_path}")
@@ -57,7 +55,6 @@ def create_experiment_directory(base_output_path: str, model_name: str, config: 
     return experiment_path
 
 def save_model_summary(model, config, experiment_path):
-    """Saves a summary of the model architecture and parameter counts."""
     summary_path = os.path.join(experiment_path, "model_summary.txt")
     try:
         s = io.StringIO()
@@ -73,41 +70,58 @@ def save_model_summary(model, config, experiment_path):
             f.write("OVERALL PARAMETER COUNT:\n" + "="*20 + "\n")
             f.write(f"Total params: {total_params:,}\n")
             f.write(f"Trainable params: {trainable_params:,}\n")
-
-            if hasattr(model, 'backbone') and hasattr(model, 'head'):
+            
+            # Bileşen bazlı parametre dökümü (CNN_MTL için)
+            if hasattr(model, 'feature_branches') and hasattr(model, 'heads'):
                 f.write("\nPARAMETER COUNT BY COMPONENT:\n" + "="*30 + "\n")
-                
-                backbone_params = sum(p.numel() for p in model.backbone.parameters())
-                head_params = sum(p.numel() for p in model.head.parameters())
-                
-                f.write(f"Backbone params: {backbone_params:,} ({backbone_params/total_params:.2%})\n")
-                f.write(f"Head params: {head_params:,} ({head_params/total_params:.2%})\n")
-                
-        logger.info(f"Model summary with component breakdown saved to {summary_path}")
-
+                backbone_params = sum(p.numel() for p in model.feature_branches.parameters())
+                f.write(f"Backbone (Feature Branches): {backbone_params:,} ({backbone_params/total_params:.2%})\n")
+                if hasattr(model, 'projections'):
+                    proj_params = sum(p.numel() for p in model.projections.parameters())
+                    f.write(f"Projections: {proj_params:,} ({proj_params/total_params:.2%})\n")
+                for name, head in model.heads.items():
+                    h_params = sum(p.numel() for p in head.parameters())
+                    f.write(f"Head '{name}': {h_params:,} ({h_params/total_params:.2%})\n")
+                    
     except Exception as e:
-        logger.error(f"Could not generate model summary. Error: {e}", exc_info=True)
+        logger.error(f"Could not generate model summary. Error: {e}")
 
 def generate_experiment_report(model: torch.nn.Module, history: dict, val_loader: torch.utils.data.DataLoader, 
-                             config: dict, experiment_path: str, device: torch.device, profile: GuitarProfile):
-    """The main function that orchestrates the report generation."""
+                             config: dict, experiment_path: str, device: torch.device, profile: GuitarProfile, include_silence, silence_class):
     logger.info("--- Generating Final Experiment Report ---")
     paths = _setup_report_directories(experiment_path)
+    
+    # 1. Geçmiş (History) Grafiklerini Çiz (DETAYLI)
     _plot_history_curves(history, paths)
-    sample_data = _get_sample_data_and_predictions(model, val_loader, config, device, profile)
+    
+    # 2. Örnek Veri ve Tahminleri Al (ESKİ GÜVENİLİR MANTIK)
+    sample_data = _get_sample_data_and_predictions(model, val_loader, config, device, profile, include_silence, silence_class)
+    
+    # 3. Görselleştirmeleri Çiz (DETAYLI AUX VISUALS DAHİL)
     _plot_sample_visualizations(sample_data, paths, config)
+    
     logger.info("Experiment report generation complete.")
 
 def _setup_report_directories(experiment_path: str) -> dict:
-    """Rapor için gerekli tüm klasörleri oluşturur ve yollarını döndürür."""
     logger.info("Setting up report directories...")
     paths = {
         "charts": os.path.join(experiment_path, "charts"),
         "samples": os.path.join(experiment_path, "charts", "sample_outputs"),
         "loss": os.path.join(experiment_path, "charts", "loss"),
+        
+        # Main Task
         "tablature": os.path.join(experiment_path, "charts", "tablature"),
+        
+        # Aux Tasks (Ayrı klasörler)
+        "hand_position": os.path.join(experiment_path, "charts", "hand_position"),
+        "string_activity": os.path.join(experiment_path, "charts", "string_activity"),
+        "pitch_class": os.path.join(experiment_path, "charts", "pitch_class"),
+        
+        # Extras
         "multi_pitch": os.path.join(experiment_path, "charts", "multi_pitch"),
         "octave": os.path.join(experiment_path, "charts", "octave_tolerated"),
+        
+        # Analysis
         "errors": os.path.join(experiment_path, "charts", "errors"),
         "tdr": os.path.join(experiment_path, "charts", "tdr")  
     }
@@ -116,76 +130,69 @@ def _setup_report_directories(experiment_path: str) -> dict:
     return paths
 
 def _plot_history_curves(history: dict, paths: dict):
-    """Eğitim geçmişindeki tüm metrikler için kayıp/performans eğrilerini çizer."""
     logger.info("Plotting all history curves...")
     
     plot_jobs = [
-        # --- Tablature (Micro) ---
-        {'key': 'tab_f1', 'title': 'Tablature F1 Score (Micro)', 'dir': paths['tablature'], 'file': 'f1_score_curve_micro.png'},
-        {'key': 'tab_precision', 'title': 'Tablature Precision (Micro)', 'dir': paths['tablature'], 'file': 'precision_curve_micro.png'},
-        {'key': 'tab_recall', 'title': 'Tablature Recall (Micro)', 'dir': paths['tablature'], 'file': 'recall_curve_micro.png'},
-        
-        # --- Tablature (Weighted) ---
-        {'key': 'tab_f1_weighted', 'title': 'Tablature F1 Score (Weighted)', 'dir': paths['tablature'], 'file': 'f1_score_curve_weighted.png'},
-        {'key': 'tab_precision_weighted', 'title': 'Tablature Precision (Weighted)', 'dir': paths['tablature'], 'file': 'precision_curve_weighted.png'},
-        {'key': 'tab_recall_weighted', 'title': 'Tablature Recall (Weighted)', 'dir': paths['tablature'], 'file': 'recall_curve_weighted.png'},
-        
-        # --- Tablature (Macro) ---
-        {'key': 'tab_f1_macro', 'title': 'Tablature F1 Score (Macro)', 'dir': paths['tablature'], 'file': 'f1_score_curve_macro.png'},
-        {'key': 'tab_precision_macro', 'title': 'Tablature Precision (Macro)', 'dir': paths['tablature'], 'file': 'precision_curve_macro.png'},
-        {'key': 'tab_recall_macro', 'title': 'Tablature Recall (Macro)', 'dir': paths['tablature'], 'file': 'recall_curve_macro.png'},
-        
-        # --- Multi-pitch ---
-        {'key': 'mp_f1', 'title': 'Multi-pitch F1 Score', 'dir': paths['multi_pitch'], 'file': 'f1_score_curve.png'},
-        {'key': 'mp_precision', 'title': 'Multi-pitch Precision', 'dir': paths['multi_pitch'], 'file': 'precision_curve.png'},
-        {'key': 'mp_recall', 'title': 'Multi-pitch Recall', 'dir': paths['multi_pitch'], 'file': 'recall_curve.png'},
+        # --- 1. Tablature (Main) ---
+        {'key': 'tab_f1',        'title': 'Tablature F1 Score',     'dir': paths['tablature'], 'file': 'f1_score.png'},
+        {'key': 'tab_precision', 'title': 'Tablature Precision',    'dir': paths['tablature'], 'file': 'precision.png'},
+        {'key': 'tab_recall',    'title': 'Tablature Recall',       'dir': paths['tablature'], 'file': 'recall.png'},
+        {'key': 'tdr',           'title': 'Tablature Disambiguation Rate (TDR)', 'dir': paths['tdr'], 'file': 'tdr_curve.png'},
 
-        # --- TDR ---
-        {'key': 'tdr', 'title': 'Tablature Disambiguation Rate (TDR)', 'dir': paths['tdr'], 'file': 'tdr_curve.png'},
-
-        # --- Octave Tolerant (Micro) ---
-        {'key': 'octave_f1', 'title': 'Octave Tolerant F1 (Micro)', 'dir': paths['octave'], 'file': 'f1_score_curve_micro.png'},
-        {'key': 'octave_precision', 'title': 'Octave Tolerant Precision (Micro)', 'dir': paths['octave'], 'file': 'precision_curve_micro.png'},
-        {'key': 'octave_recall', 'title': 'Octave Tolerant Recall (Micro)', 'dir': paths['octave'], 'file': 'recall_curve_micro.png'},
+        # --- 2. Hand Position (GÜNCELLENDİ) ---
+        {'key': 'hand_pos_acc',       'title': 'Hand Position Accuracy',  'dir': paths['hand_position'], 'file': 'accuracy.png'},
+        {'key': 'hand_pos_f1',        'title': 'Hand Position F1',        'dir': paths['hand_position'], 'file': 'f1_score.png'},
+        {'key': 'hand_pos_precision', 'title': 'Hand Position Precision', 'dir': paths['hand_position'], 'file': 'precision.png'},
+        {'key': 'hand_pos_recall',    'title': 'Hand Position Recall',    'dir': paths['hand_position'], 'file': 'recall.png'},
         
-        # --- Octave Tolerant (Weighted) ---
-        {'key': 'octave_f1_weighted', 'title': 'Octave Tolerant F1 (Weighted)', 'dir': paths['octave'], 'file': 'f1_score_curve_weighted.png'},
-        {'key': 'octave_precision_weighted', 'title': 'Octave Tolerant Precision (Weighted)', 'dir': paths['octave'], 'file': 'precision_curve_weighted.png'},
-        {'key': 'octave_recall_weighted', 'title': 'Octave Tolerant Recall (Weighted)', 'dir': paths['octave'], 'file': 'recall_curve_weighted.png'},
+        # --- 3. String Activity (GÜNCELLENDİ) ---
+        {'key': 'string_act_f1',        'title': 'String Activity F1',        'dir': paths['string_activity'], 'file': 'f1_score.png'},
+        {'key': 'string_act_precision', 'title': 'String Activity Precision', 'dir': paths['string_activity'], 'file': 'precision.png'},
+        {'key': 'string_act_recall',    'title': 'String Activity Recall',    'dir': paths['string_activity'], 'file': 'recall.png'},
         
-        # --- Octave Tolerant (Macro) ---
-        {'key': 'octave_f1_macro', 'title': 'Octave Tolerant F1 (Macro)', 'dir': paths['octave'], 'file': 'f1_score_curve_macro.png'},
-        {'key': 'octave_precision_macro', 'title': 'Octave Tolerant Precision (Macro)', 'dir': paths['octave'], 'file': 'precision_curve_macro.png'},
-        {'key': 'octave_recall_macro', 'title': 'Octave Tolerant Recall (Macro)', 'dir': paths['octave'], 'file': 'recall_curve_macro.png'},
+        # --- 4. Pitch Class (GÜNCELLENDİ) ---
+        {'key': 'pitch_class_f1',        'title': 'Pitch Class F1',        'dir': paths['pitch_class'], 'file': 'f1_score.png'},
+        {'key': 'pitch_class_precision', 'title': 'Pitch Class Precision', 'dir': paths['pitch_class'], 'file': 'precision.png'},
+        {'key': 'pitch_class_recall',    'title': 'Pitch Class Recall',    'dir': paths['pitch_class'], 'file': 'recall.png'},
+        
+        # --- 5. Multi-pitch (Extra) ---
+        {'key': 'mp_f1',        'title': 'Multi-pitch F1 Score',  'dir': paths['multi_pitch'], 'file': 'f1_score.png'},
+        {'key': 'mp_precision', 'title': 'Multi-pitch Precision', 'dir': paths['multi_pitch'], 'file': 'precision.png'},
+        {'key': 'mp_recall',    'title': 'Multi-pitch Recall',    'dir': paths['multi_pitch'], 'file': 'recall.png'},
 
-        # --- Errors ---
-        {'key': 'tab_error_total', 'title': 'Total Error Rate', 'dir': paths['errors'], 'file': 'error_total_curve.png'},
-        {'key': 'tab_error_substitution', 'title': 'Substitution Error Rate', 'dir': paths['errors'], 'file': 'error_substitution_curve.png'},
-        {'key': 'tab_error_miss', 'title': 'Miss Error Rate', 'dir': paths['errors'], 'file': 'error_miss_curve.png'},
-        {'key': 'tab_error_false_alarm', 'title': 'False Alarm Error Rate', 'dir': paths['errors'], 'file': 'error_false_alarm_curve.png'},
-        {'key': 'tab_error_duplicate_pitch', 'title': 'Duplicate Pitch Error Rate', 'dir': paths['errors'], 'file': 'error_duplicate_pitch_curve.png'}
+        # --- 6. Octave Tolerant (Extra) ---
+        {'key': 'octave_f1',        'title': 'Octave Tolerant F1',        'dir': paths['octave'], 'file': 'f1_score.png'},
+        {'key': 'octave_precision', 'title': 'Octave Tolerant Precision', 'dir': paths['octave'], 'file': 'precision.png'},
+        {'key': 'octave_recall',    'title': 'Octave Tolerant Recall',    'dir': paths['octave'], 'file': 'recall.png'},
+        
+        # --- 7. Errors (Rates) ---
+        {'key': 'tab_error_total',           'title': 'Total Error Rate',           'dir': paths['errors'], 'file': 'error_total.png'},
+        {'key': 'tab_error_substitution',    'title': 'Substitution Error Rate',    'dir': paths['errors'], 'file': 'error_substitution.png'},
+        {'key': 'tab_error_miss',            'title': 'Miss Error Rate (FN)',       'dir': paths['errors'], 'file': 'error_miss.png'},
+        {'key': 'tab_error_false_alarm',     'title': 'False Alarm Error Rate (FP)','dir': paths['errors'], 'file': 'error_false_alarm.png'},
+        {'key': 'tab_error_duplicate_pitch', 'title': 'Duplicate Pitch Error Rate', 'dir': paths['errors'], 'file': 'error_duplicate_pitch.png'}
     ]
     
-    loss_keys = ["total", "primary", "aux", "activity", "onset", "offset"]
-    for loss_key in loss_keys:
-        history_key = f'train_loss_{loss_key}'
-        if any(val > 1e-9 for val in history.get(history_key, [])):
-            plot_jobs.append({
-                'key': f'loss_{loss_key}', 
-                'title': f'{loss_key.capitalize()} Loss', 
-                'dir': paths['loss'], 
-                'file': f'{loss_key}_loss_curve.png'
-            })
+    # Loss Plotting
+    all_loss_keys = [k.replace('train_', '') for k in history.keys() if k.startswith('train_loss_')]
+    for loss_key in all_loss_keys:
+        friendly_name = loss_key.replace('loss_', '').replace('_', ' ').title()
+        plot_jobs.append({
+            'key': loss_key, 
+            'title': f'{friendly_name} Loss', 
+            'dir': paths['loss'], 
+            'file': f'{loss_key}.png'
+        })
     
     for job in plot_jobs:
         val_key, train_key = f"val_{job['key']}", f"train_{job['key']}"
-        if val_key in history and train_key in history and any(history[val_key]):
-            plot_metrics_custom(history, val_key, train_key, job['title'], os.path.join(job['dir'], job['file']))
-            
-    logger.info("All history plots have been saved.")
+        if (val_key in history and any(history[val_key])) or (train_key in history and any(history[train_key])):
+            try:
+                plot_metrics_custom(history, val_key, train_key, job['title'], os.path.join(job['dir'], job['file']))
+            except Exception as e:
+                logger.warning(f"Could not plot {job['key']}: {e}")
 
-def _get_sample_data_and_predictions(model, val_loader, config, device, profile):
-    """Bir örneklem alır, modelin tüm kafaları için tahmin yapar ve verileri görselleştirme için hazırlar."""
+def _get_sample_data_and_predictions(model, val_loader, config, device, profile, include_silence, silence_class):
     logger.info("Generating a sample batch for visual comparison...")
     try:
         sample_batch = next(iter(val_loader))
@@ -195,123 +202,122 @@ def _get_sample_data_and_predictions(model, val_loader, config, device, profile)
     model.eval()
     with torch.no_grad():
         features_dict = {key: tensor.to(device) for key, tensor in sample_batch['features'].items()}
-        model_output = model(**features_dict)
+        model_output = model(features_dict)
         
+        # 1. Tablature Tahmini
         tab_logits = model_output.get('tab_logits')
-        activity_logits = model_output.get('activity_logits')
-        onset_logits = model_output.get('onset_logits')
-        offset_logits = model_output.get('offset_logits')
-        
         S, C = config['instrument']['num_strings'], config['model']['params']['num_classes']
-        preds_tab, preds_activity, preds_onset, preds_offset = (None,) * 4
-
+        preds_tab = None
         if tab_logits is not None:
-            if tab_logits.dim() == 4: preds_tab = torch.argmax(tab_logits.permute(0, 2, 1, 3), dim=-1)
-            elif tab_logits.dim() == 2: preds_tab = torch.argmax(tab_logits.view(-1, S, C), dim=-1)
-        if activity_logits is not None: preds_activity = (torch.sigmoid(activity_logits) > 0.5).int()
-        if onset_logits is not None: preds_onset = (torch.sigmoid(onset_logits) > 0.5).int()
-        if offset_logits is not None: preds_offset = (torch.sigmoid(offset_logits) > 0.5).int()
-        
-    gt_tab_np, pred_tab_np, gt_activity_np, pred_activity_np, gt_onset_np, pred_onset_np, gt_offset_np, pred_offset_np = (None,) * 8
+            if tab_logits.dim() == 3: 
+                 preds_tab = torch.argmax(tab_logits, dim=-1)
+            elif tab_logits.dim() == 2:
+                 preds_tab = torch.argmax(tab_logits.view(-1, S, C), dim=-1)
 
-    preparation_mode = config['data']['active_preparation_mode']
-    if preparation_mode == 'framify':
-        chunk_size = config['data']['framify_chunk_size'] 
-        
-        gt_tab_np = sample_batch['tablature'][:chunk_size].cpu().numpy().T
-        
-        if 'activity_target' in sample_batch:
-            gt_activity_np = sample_batch['activity_target'][:chunk_size].cpu().numpy()[np.newaxis, :]
-        if 'onset_target' in sample_batch:
-            gt_onset_np = sample_batch['onset_target'][:chunk_size].cpu().numpy().T
-        if 'offset_target' in sample_batch:
-            gt_offset_np = sample_batch['offset_target'][:chunk_size].cpu().numpy().T
+        # 2. Aux Tahminleri
+        preds_hp = torch.argmax(model_output.get('hand_pos_logits'), dim=-1) if 'hand_pos_logits' in model_output else None
+        preds_act = (torch.sigmoid(model_output.get('activity_logits')) > 0.5).int() if 'activity_logits' in model_output else None
+        preds_pc = (torch.sigmoid(model_output.get('pitch_class_logits')) > 0.5).int() if 'pitch_class_logits' in model_output else None
 
-        if preds_tab is not None: 
-            pred_tab_np = preds_tab[:chunk_size].cpu().numpy().T
-        if preds_activity is not None: 
-            pred_activity_np = preds_activity[:chunk_size].cpu().numpy()[np.newaxis, :]
-        if preds_onset is not None:
-            pred_onset_np = preds_onset[:chunk_size].cpu().numpy().T
-        if preds_offset is not None:
-            pred_offset_np = preds_offset[:chunk_size].cpu().numpy().T
+    # --- ESKİ VE GÜVENİLİR VERİ SEÇİMİ ---
+    chunk_size = config['data']['framify_chunk_size']
+    limit = min(chunk_size, sample_batch['tablature'].shape[0])
+    
+    def to_np(t): 
+        if t is None: return None
+        return t[:limit].cpu().numpy()
 
-    else: # windowing mode
-        gt_tab_np = sample_batch["tablature"][0].cpu().numpy()
-        pred_tab_np = preds_tab[0].cpu().numpy()
-        if 'activity_target' in sample_batch and preds_activity is not None:
-              gt_activity_np = sample_batch['activity_target'][0].cpu().numpy()[np.newaxis, :]
-              pred_activity_np = preds_activity[0].cpu().numpy()[np.newaxis, :]
-        # ... (add similar logic for onset/offset if needed for windowing)
-        pass
+    gt_tab_np = to_np(sample_batch['tablature']).T 
+    pred_tab_np = to_np(preds_tab).T if preds_tab is not None else None
+    
+    gt_act_np = to_np(sample_batch.get('activity_target')).T if 'activity_target' in sample_batch else None
+    pred_act_np = to_np(preds_act).T if preds_act is not None else None
+    
+    gt_pc_np = to_np(sample_batch.get('pitch_class_target')).T if 'pitch_class_target' in sample_batch else None
+    pred_pc_np = to_np(preds_pc).T if preds_pc is not None else None
+    
+    gt_hp_np = to_np(sample_batch.get('hand_pos_target')) # (Time,)
+    pred_hp_np = to_np(preds_hp)
 
+    # --- PIANO ROLL DÖNÜŞÜMÜ (agt_tools kullanır - GÜVENİLİR) ---
     gt_pianoroll, pred_pianoroll = None, None
+    
     if gt_tab_np is not None:
-        # Note: tablature_to_stacked_multi_pitch expects (S, T) shape
-        gt_smp = tablature_to_stacked_multi_pitch(torch.from_numpy(gt_tab_np), profile)
+        gt_smp = tablature_to_stacked_multi_pitch(torch.from_numpy(gt_tab_np), profile, include_silence, silence_class)
         gt_pianoroll = stacked_multi_pitch_to_multi_pitch(gt_smp).numpy()
+        
     if pred_tab_np is not None:
-        pred_smp = tablature_to_stacked_multi_pitch(torch.from_numpy(pred_tab_np), profile)
+        pred_smp = tablature_to_stacked_multi_pitch(torch.from_numpy(pred_tab_np), profile, include_silence, silence_class)
         pred_pianoroll = stacked_multi_pitch_to_multi_pitch(pred_smp).numpy()
 
     return {
-        "sample_batch": sample_batch, "gt_tab_np": gt_tab_np, "pred_tab_np": pred_tab_np,
-        "gt_activity_np": gt_activity_np, "pred_activity_np": pred_activity_np,
-        "gt_onset_np": gt_onset_np, "pred_onset_np": pred_onset_np,
-        "gt_offset_np": gt_offset_np, "pred_offset_np": pred_offset_np,
+        "sample_batch": sample_batch, 
+        "gt_tab_np": gt_tab_np, "pred_tab_np": pred_tab_np,
+        "gt_act_np": gt_act_np, "pred_act_np": pred_act_np,
+        "gt_pc_np": gt_pc_np, "pred_pc_np": pred_pc_np,
+        "gt_hp_np": gt_hp_np, "pred_hp_np": pred_hp_np,
         "gt_pianoroll": gt_pianoroll, "pred_pianoroll": pred_pianoroll,
     }
 
 def _plot_sample_visualizations(sample_data: dict, paths: dict, config: dict):
-    """Uses the prepared data to plot all visualizations."""
     if not sample_data: return
     logger.info("Plotting sample visualizations...")
     sample_path = paths['samples']
     hop_seconds = config['data']['hop_length'] / config['data']['sample_rate']
     silence_class = config['instrument']['silence_class']
+    min_midi_val = config['instrument']['min_midi']
 
-    for key, tensor in sample_data['sample_batch']['features'].items():
-        spec_to_plot = tensor[0][0].cpu().numpy()
-        plot_spectrogram(spec_to_plot, hop_seconds, save_path=os.path.join(sample_path, f"sample_spec_{key}.png"), title=f"Sample Spectrogram ({key.upper()})")
-
+    # 1. Tablature
     if sample_data['gt_tab_np'] is not None:
-        plot_guitar_tablature(sample_data['gt_tab_np'].T, hop_seconds, os.path.join(sample_path, "sample_tab_truth.png"), "Ground Truth Tablature")
+        plot_guitar_tablature(sample_data['gt_tab_np'], hop_seconds, os.path.join(sample_path, "sample_tab_truth.png"), "Ground Truth Tablature")
     if sample_data['pred_tab_np'] is not None:
-        plot_guitar_tablature(sample_data['pred_tab_np'].T, hop_seconds, os.path.join(sample_path, "sample_tab_pred.png"), "Predicted Tablature")
-    if sample_data['gt_pianoroll'] is not None:
-        plot_pianoroll(sample_data['gt_pianoroll'], hop_seconds, os.path.join(sample_path, "sample_pianoroll_truth.png"), "Ground Truth (Pianoroll)")
-    if sample_data['pred_pianoroll'] is not None:
-        plot_pianoroll(sample_data['pred_pianoroll'], hop_seconds, os.path.join(sample_path, "sample_pianoroll_pred.png"), "Prediction (Pianoroll)")
+        plot_guitar_tablature(sample_data['pred_tab_np'], hop_seconds, os.path.join(sample_path, "sample_tab_pred.png"), "Predicted Tablature")
     
+    # 2. Pianoroll 
+    if sample_data['gt_pianoroll'] is not None:
+        plot_pianoroll(sample_data['gt_pianoroll'], hop_seconds, os.path.join(sample_path, "sample_pianoroll_truth.png"), "Ground Truth Pianoroll", min_midi_val)
+    if sample_data['pred_pianoroll'] is not None:
+        plot_pianoroll(sample_data['pred_pianoroll'], hop_seconds, os.path.join(sample_path, "sample_pianoroll_pred.png"), "Prediction Pianoroll", min_midi_val)
+    
+    # 3. Tablature Errors 
     if sample_data.get('gt_tab_np') is not None and sample_data.get('pred_tab_np') is not None:
-        logger.info("Plotting tablature error visualization...")
         plot_tablature_errors(
-            preds_np=sample_data['pred_tab_np'].T, 
-            targets_np=sample_data['gt_tab_np'].T,
+            preds_np=sample_data['pred_tab_np'], 
+            targets_np=sample_data['gt_tab_np'],
             hop_seconds=hop_seconds,
             silence_class=silence_class,
             save_path=os.path.join(sample_path, "sample_tab_ERRORS.png")
         )
 
-    if sample_data.get('gt_pianoroll') is not None and sample_data.get('pred_pianoroll') is not None:
-        logger.info("Plotting pianoroll error visualization...")
-        plot_pianoroll_errors(
-            pred_pianoroll=sample_data['pred_pianoroll'],
-            target_pianoroll=sample_data['gt_pianoroll'],
-            hop_seconds=hop_seconds,
-            save_path=os.path.join(sample_path, "sample_pianoroll_ERRORS.png")
-        )
+    # 4. Aux Visuals (YENİ VE KAPSAMLI)
+    if sample_data.get('gt_act_np') is not None:
+        plot_binary_activation(sample_data['gt_act_np'], hop_seconds, os.path.join(sample_path, "sample_string_act_truth.png"), "GT String Activity")
+    if sample_data.get('pred_act_np') is not None:
+        plot_binary_activation(sample_data['pred_act_np'], hop_seconds, os.path.join(sample_path, "sample_string_act_pred.png"), "Pred String Activity")
+        
+    if sample_data.get('gt_pc_np') is not None:
+        plot_binary_activation(sample_data['gt_pc_np'], hop_seconds, os.path.join(sample_path, "sample_chroma_truth.png"), "GT Pitch Class")
+    if sample_data.get('pred_pc_np') is not None:
+        plot_binary_activation(sample_data['pred_pc_np'], hop_seconds, os.path.join(sample_path, "sample_chroma_pred.png"), "Pred Pitch Class")
 
-    plot_tasks = [
-        {'name': 'Activity', 'gt': sample_data.get('gt_activity_np'), 'pred': sample_data.get('pred_activity_np')},
-        {'name': 'Onsets', 'gt': sample_data.get('gt_onset_np'), 'pred': sample_data.get('pred_onset_np')},
-        {'name': 'Offsets', 'gt': sample_data.get('gt_offset_np'), 'pred': sample_data.get('pred_offset_np')},
-    ]
+    # Hand Position (Isı Haritası Mantığıyla Çizim)
+    num_hp_classes = 5
+    def hp_to_matrix(hp_arr):
+        if hp_arr is None: return None
+        T = hp_arr.shape[0]
+        mat = np.zeros((num_hp_classes, T))
+        for t in range(T):
+            c = hp_arr[t]
+            if 0 <= c < num_hp_classes:
+                mat[c, t] = 1
+        return mat
 
-    for task in plot_tasks:
-        if task['gt'] is not None:
-            plot_binary_activation(task['gt'].T, hop_seconds, os.path.join(sample_path, f"sample_{task['name'].lower()}_truth.png"), f"Ground Truth {task['name']}")
-        if task['pred'] is not None:
-            plot_binary_activation(task['pred'].T, hop_seconds, os.path.join(sample_path, f"sample_{task['name'].lower()}_pred.png"), f"Predicted {task['name']}")
+    gt_hp_mat = hp_to_matrix(sample_data.get('gt_hp_np'))
+    pred_hp_mat = hp_to_matrix(sample_data.get('pred_hp_np'))
+    
+    if gt_hp_mat is not None:
+        plot_binary_activation(gt_hp_mat, hop_seconds, os.path.join(sample_path, "sample_hand_pos_truth.png"), "GT Hand Position (Regions)")
+    if pred_hp_mat is not None:
+        plot_binary_activation(pred_hp_mat, hop_seconds, os.path.join(sample_path, "sample_hand_pos_pred.png"), "Pred Hand Position (Regions)")
 
     logger.info(f"Sample visualizations saved to: {sample_path}")

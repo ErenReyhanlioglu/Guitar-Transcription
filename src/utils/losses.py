@@ -2,345 +2,186 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 import logging
-from src.utils.logger import describe
 
 logger = logging.getLogger(__name__)
 
-class MultiClassFocalLoss(nn.Module):
-    def __init__(self, gamma=2.0, weight=None, ignore_index=-1, reduction='mean'):
+class FocalLoss(nn.Module):
+    """
+    Focal Loss for handling class imbalance.
+    """
+    def __init__(self, gamma=2.0, alpha=None, ignore_index=-1, reduction='mean'):
         super().__init__()
         self.gamma = gamma
-        self.weight = weight
+        self.alpha = alpha
         self.ignore_index = ignore_index
         self.reduction = reduction
 
-    def forward(self, input, target, class_weights=None): 
-        ce_loss = F.cross_entropy(input, target, weight=class_weights, ignore_index=self.ignore_index, reduction='none')
+    def forward(self, logits, targets):
+        ce_loss = F.cross_entropy(
+            logits, targets, 
+            reduction='none', 
+            ignore_index=self.ignore_index, 
+            weight=self.alpha
+        )
         pt = torch.exp(-ce_loss)
         focal_loss = ((1 - pt) ** self.gamma) * ce_loss
         
-        valid_mask = target != self.ignore_index
         if self.reduction == 'mean':
-            return focal_loss[valid_mask].mean() if valid_mask.any() else torch.tensor(0.0).to(input.device)
-        elif self.reduction == 'sum':
-            return focal_loss[valid_mask].sum()
-        else:
-            return focal_loss
-
-class BinaryFocalLoss(nn.Module):
-    def __init__(self, alpha=0.25, gamma=2.0, reduction='mean'):
-        super().__init__()
-        self.alpha = alpha
-        self.gamma = gamma
-        self.reduction = reduction
-
-    def forward(self, inputs, targets):
-        bce_loss = F.binary_cross_entropy_with_logits(inputs, targets, reduction='none')
-        p = torch.sigmoid(inputs)
-        pt = targets * p + (1 - targets) * (1 - p)
-        alpha_t = targets * self.alpha + (1 - targets) * (1 - self.alpha)
-        focal_loss = alpha_t * ((1 - pt) ** self.gamma) * bce_loss
-        
-        if self.reduction == 'mean':
-            return focal_loss.mean()
+            active_elements = (targets != self.ignore_index).sum()
+            return focal_loss.sum() / (active_elements + 1e-8)
         elif self.reduction == 'sum':
             return focal_loss.sum()
         else:
             return focal_loss
 
-class CustomSoftmaxTablatureLoss(nn.Module):
-    def __init__(self, miss_penalty=1.0, false_alarm_penalty=1.0, substitution_penalty=1.0, 
-                 silence_class=20, ignore_index=-1):
+class MultiTaskUncertaintyLoss(nn.Module):
+    """
+    Dynamic Uncertainty Weighting.
+    Creates a learnable sigma parameter for each active task.
+    """
+    def __init__(self, active_tasks):
         super().__init__()
-        self.miss_penalty = miss_penalty
-        self.false_alarm_penalty = false_alarm_penalty
-        self.substitution_penalty = substitution_penalty
-        self.silence_class = silence_class
-        self.ignore_index = ignore_index
-        logger.info(f"CustomSoftmaxTablatureLoss initialized with penalties: "
-                    f"Miss={miss_penalty}, FA={false_alarm_penalty}, Sub={substitution_penalty}")
-
-    def forward(self, preds, targets, class_weights=None):
-        valid_mask = targets != self.ignore_index
-        if not valid_mask.any():
-            return torch.tensor(0.0).to(preds.device)
-
-        preds = preds[valid_mask]
-        targets = targets[valid_mask]
-
-        per_sample_loss = F.cross_entropy(preds, targets, weight=class_weights, reduction='none')
-
-        with torch.no_grad():
-            pred_classes = torch.argmax(preds, dim=1)
-            
-            miss_mask = (targets != self.silence_class) & (pred_classes == self.silence_class)
-            false_alarm_mask = (targets == self.silence_class) & (pred_classes != self.silence_class)
-            sub_mask = (targets != self.silence_class) & \
-                       (pred_classes != self.silence_class) & \
-                       (targets != pred_classes)
-
-            penalties = torch.ones_like(targets, dtype=torch.float)
-            penalties[miss_mask] = self.miss_penalty
-            penalties[false_alarm_mask] = self.false_alarm_penalty
-            penalties[sub_mask] = self.substitution_penalty
-
-        weighted_loss = per_sample_loss * penalties
-        return weighted_loss.mean()
-
-class CustomPenalizedFocalLoss(nn.Module):
-    def __init__(self, gamma=2.0, miss_penalty=1.5, false_alarm_penalty=1.5, substitution_penalty=1.0, 
-                 silence_class=20, ignore_index=-1):
-        super().__init__()
-        self.gamma = gamma
-        self.miss_penalty = miss_penalty
-        self.false_alarm_penalty = false_alarm_penalty
-        self.substitution_penalty = substitution_penalty
-        self.silence_class = silence_class
-        self.ignore_index = ignore_index
-        logger.info("CustomPenalizedFocalLoss initialized.")
-
-    def forward(self, preds, targets, class_weights=None):
-        valid_mask = targets != self.ignore_index
-        if not valid_mask.any(): return torch.tensor(0.0).to(preds.device)
-        preds, targets = preds[valid_mask], targets[valid_mask]
-
-        ce_loss = F.cross_entropy(preds, targets, weight=class_weights, reduction='none')
-
-        pt = torch.exp(-ce_loss)
-        focal_term = (1 - pt) ** self.gamma
-
-        with torch.no_grad():
-            pred_classes = torch.argmax(preds, dim=1)
-            miss_mask = (targets != self.silence_class) & (pred_classes == self.silence_class)
-            fa_mask = (targets == self.silence_class) & (pred_classes != self.silence_class)
-            sub_mask = (targets != self.silence_class) & (pred_classes != self.silence_class) & (targets != pred_classes)
-            penalties = torch.ones_like(targets, dtype=torch.float)
-            penalties[miss_mask] = self.miss_penalty
-            penalties[fa_mask] = self.false_alarm_penalty
-            penalties[sub_mask] = self.substitution_penalty
-
-        final_loss = penalties * focal_term * ce_loss
-        return final_loss.mean()
-
-class CustomLogisticTablatureLoss(nn.Module):
-    def __init__(self, config: dict):
-        super().__init__()
-        loss_params = config['loss'] 
-        instrument_params = config['instrument']
-        self.lmbda = loss_params.get('lmbda', 0.0)
-        self.num_strings = instrument_params['num_strings']
-        self.num_frets = instrument_params['num_frets'] + 1 # num_classes_per_string is num_frets + silence
-        self.use_focal = loss_params.get('use_focal', False)
+        self.active_tasks = set(active_tasks)
         
-        if self.use_focal:
-            focal_params = loss_params.get('focal_params', {})
-            self.bce_equivalent = BinaryFocalLoss(
-                alpha=focal_params.get('alpha', 0.25),
-                gamma=focal_params.get('gamma', 2.0)
-            )
-        else:
-            self.bce_equivalent = nn.BCEWithLogitsLoss()
-
-    def forward(self, preds, targets):
-        main_loss = self.bce_equivalent(preds, targets)
+        # Initialize log variance parameters to 0.0 (variance=1.0)
+        self.log_vars = nn.ParameterDict({
+            task: nn.Parameter(torch.zeros(1)) for task in active_tasks
+        })
         
-        inhibition_loss = 0.0
-        if self.lmbda > 0:
-            probs = torch.sigmoid(preds)
-            probs_reshaped = probs.view(-1, self.num_strings, self.num_frets)
-            sum_probs_per_string = torch.sum(probs_reshaped, dim=-1)
-            inhibition_loss = torch.mean(torch.pow(F.relu(sum_probs_per_string - 1), 2))
-
-        return main_loss + self.lmbda * inhibition_loss
+    def forward(self, losses_dict):
+        total_loss = 0
+        
+        for task_name, loss_val in losses_dict.items():
+            if task_name in self.log_vars:
+                log_var = self.log_vars[task_name]
+                precision = torch.exp(-log_var)
+                
+                # Formula: 1/(2*sigma^2) * Loss + log(sigma)
+                weighted_loss = 0.5 * precision * loss_val + 0.5 * log_var
+                total_loss += weighted_loss
+            else:
+                # If task is not in UW list (unexpected), add raw loss
+                total_loss += loss_val
+                
+        return total_loss
 
 class CombinedLoss(nn.Module):
-    def __init__(self, config: dict, class_weights: torch.Tensor = None):
+    def __init__(self, config, class_weights=None):
         super().__init__()
         self.config = config
         self.loss_config = config['loss']
-        self.instrument_config = config['instrument']
         
-        self.active_loss_strategy = self.loss_config['active_loss']
-        self.active_loss_config = self.loss_config['configurations'][self.active_loss_strategy]
-        
-        self.class_weights = class_weights
-        if self.class_weights is not None and self.active_loss_config.get('use_class_weights', False):
-            logger.info(f"CombinedLoss initialized with class weights of shape: {self.class_weights.shape}")
-
-        self.primary_loss_fn = self._create_primary_loss()
-        self._setup_helper_losses()
-
-    def _create_primary_loss(self):
-        loss_type = self.active_loss_config.get('type')
-        use_focal = self.active_loss_config.get('use_focal', False)
-        
-        logger.info(f"Creating primary loss for '{self.active_loss_strategy}' strategy...")
-        
-        if self.active_loss_strategy != 'softmax_groups':
-            raise ValueError(f"This advanced loss setup is only for 'softmax_groups'.")
-
-        penalty_config = self.active_loss_config.get('custom_softmax_penalties', {})
-        focal_params = self.active_loss_config.get('focal_params', {})
-        silence_cls = self.instrument_config['silence_class']
-
-        if loss_type == "CustomSoftmaxTablatureLoss" and use_focal:
-            logger.info("--> Activating COMBINED loss: CustomPenalizedFocalLoss")
-            return CustomPenalizedFocalLoss(
-                gamma=focal_params.get('gamma', 2.0),
-                miss_penalty=penalty_config.get('miss', 1.5),
-                false_alarm_penalty=penalty_config.get('false_alarm', 1.5),
-                substitution_penalty=penalty_config.get('substitution', 1.0),
-                silence_class=silence_cls,
-                ignore_index=-1
-            )
-        
-        elif loss_type == "CustomSoftmaxTablatureLoss":
-            logger.info("--> Activating penalty-based loss: CustomSoftmaxTablatureLoss")
-            return CustomSoftmaxTablatureLoss(
-                miss_penalty=penalty_config.get('miss', 1.5),
-                false_alarm_penalty=penalty_config.get('false_alarm', 1.5),
-                substitution_penalty=penalty_config.get('substitution', 1.0),
-                silence_class=silence_cls,
-                ignore_index=-1
-            )
-
-        elif use_focal:
-            logger.info("--> Activating standard Focal Loss: MultiClassFocalLoss")
-            return MultiClassFocalLoss(
-                gamma=focal_params.get('gamma', 2.0),
-                ignore_index=-1
-            )
-        
-        elif loss_type == "CrossEntropyLoss":
-            logger.info("--> Activating default loss: CrossEntropyLoss")
-            return nn.CrossEntropyLoss(ignore_index=-1)
+        # --- CONFIG FIX ---
+        # Heads parametresini esnek bir şekilde bul
+        model_params = config['model'].get('params', {})
+        if 'heads' in model_params:
+            self.heads_config = model_params['heads']
+        else:
+            self.heads_config = config['model'].get('heads', {}) # Fallback
             
-        else:
-            raise ValueError(f"Unsupported loss type or combination for softmax_groups: {loss_type} with use_focal={use_focal}")
-
-    def _create_helper_loss(self, loss_key: str):
-        """Yardımcı görevler (aux, activity, onset, offset) için loss fonksiyonu oluşturur."""
-        loss_config = self.loss_config.get(loss_key, {})
-        loss_type = loss_config.get('type')
-        
-        if not loss_type:
-             raise ValueError(f"Loss type for '{loss_key}' must be specified in the config.")
-
-        logger.info(f"Creating helper loss '{loss_key}' of type: '{loss_type}'")
-        
-        if loss_type == "BCEWithLogitsLoss":
-            return nn.BCEWithLogitsLoss()
-        else:
-            raise ValueError(f"Unsupported helper loss type: {loss_type}")
-
-    def _setup_helper_losses(self):
-        """Tüm yardımcı loss'ları config'e göre ayarlar."""
-        # Auxiliary Loss
-        self.aux_enabled = self.loss_config.get('auxiliary_loss', {}).get('enabled', False)
-        if self.aux_enabled:
-            self.auxiliary_loss_fn = self._create_helper_loss('auxiliary_loss')
-            self.aux_weight = self.loss_config['auxiliary_loss'].get('weight')
-            logger.info(f"Enabled helper loss: auxiliary_loss with weight {self.aux_weight}")
-
-        # Activity Loss
-        self.activity_enabled = self.loss_config.get('activity_loss', {}).get('enabled', False)
-        if self.activity_enabled:
-            self.activity_loss_fn = self._create_helper_loss('activity_loss')
-            self.activity_weight = self.loss_config['activity_loss'].get('weight')
-            logger.info(f"Enabled helper loss: activity_loss with weight {self.activity_weight}")
-
-        # Onset Loss
-        self.onset_enabled = self.loss_config.get('onset_loss', {}).get('enabled', False)
-        if self.onset_enabled:
-            self.onset_loss_fn = self._create_helper_loss('onset_loss')
-            self.onset_weight = self.loss_config['onset_loss'].get('weight')
-            logger.info(f"Enabled helper loss: onset_loss with weight {self.onset_weight}")
-
-        # Offset Loss
-        self.offset_enabled = self.loss_config.get('offset_loss', {}).get('enabled', False)
-        if self.offset_enabled:
-            self.offset_loss_fn = self._create_helper_loss('offset_loss')
-            self.offset_weight = self.loss_config['offset_loss'].get('weight')
-            logger.info(f"Enabled helper loss: offset_loss with weight {self.offset_weight}")
-    
-    def forward(self, model_output: dict, batch: dict) -> dict:
-        loss_dict = {}
-
-        tab_logits = model_output.get('tab_logits')
-        tablature_target = batch.get('tablature')
-        
-        primary_loss = torch.tensor(0.0, device=tab_logits.device)
-
-        if tab_logits is not None and tablature_target is not None:
-            if self.active_loss_strategy == 'softmax_groups':
-                S = self.instrument_config['num_strings']
-                C = self.config['model']['params']['num_classes']
-
-                if tab_logits.dim() == 4:
-                    tablature_target_reshaped = tablature_target.permute(0, 2, 1).reshape(-1, S)
-                    logits_reshaped = tab_logits.reshape(-1, S, C)
-                elif tab_logits.dim() == 2:
-                    logits_reshaped = tab_logits.reshape(-1, S, C)
-                    tablature_target_reshaped = tablature_target
-                else:
-                    raise ValueError(f"Unsupported 'tab_logits' dimension: {tab_logits.dim()}")
+        self.device = config['training']['device']
                 
-                total_string_loss = 0.0
-                use_class_weights = self.active_loss_config.get('use_class_weights', False)
-                for s in range(S):
-                    pred_s = logits_reshaped[:, s, :]
-                    target_s = tablature_target_reshaped[:, s]
+        tab_conf = self.loss_config.get('tablature_loss', {})
+        self.tab_loss_fn = FocalLoss(
+            gamma=tab_conf.get('params', {}).get('gamma', 2.0),
+            ignore_index=tab_conf.get('params', {}).get('ignore_index', -1),
+            alpha=class_weights.to(self.device) if class_weights is not None else None
+        )
+
+        self.bce = nn.BCEWithLogitsLoss()
+        self.ce = nn.CrossEntropyLoss() # For Hand Position
+
+        self.active_tasks = ['tablature'] 
+        
+        if self.heads_config.get('hand_position', {}).get('enabled', False):
+            self.active_tasks.append('hand_position')
+        if self.heads_config.get('string_activity', {}).get('enabled', False):
+            self.active_tasks.append('string_activity')
+        if self.heads_config.get('pitch_class', {}).get('enabled', False):
+            self.active_tasks.append('pitch_class')
+        if self.heads_config.get('multipitch', {}).get('enabled', False): 
+            self.active_tasks.append('multipitch')
+        if self.heads_config.get('onset', {}).get('enabled', False):
+            self.active_tasks.append('onset')
+        
+
+        logger.info(f"Loss Active Tasks: {self.active_tasks}")
+
+        self.strategy = self.loss_config.get('weighting_strategy', 'static')
+        
+        if self.strategy == 'uncertainty':
+            self.uncertainty_wrapper = MultiTaskUncertaintyLoss(self.active_tasks)
+            logger.info("Strategy: Uncertainty Weighting (Learnable Sigmas)")
+        else:
+            logger.info("Strategy: Static Weighting (Fixed Config Weights)")
+
+    def forward(self, outputs, targets):
+            losses = {}
                     
-                    class_weights_s = None
-                    if use_class_weights and self.class_weights is not None:
-                        class_weights_s = self.class_weights[s].to(pred_s.device)
-                    
-                    total_string_loss += self.primary_loss_fn(pred_s, target_s, class_weights=class_weights_s)
+            # --- 1. Tablature Loss ---
+            if 'tab_logits' in outputs:
+                tab_logits = outputs['tab_logits'] # Beklenen: (B*T, S, C) veya (B*T, S*C)
+                tab_targets = targets['tablature'] # Beklenen: (B*T, S)
                 
-                primary_loss = total_string_loss / S
+                # Logits Shape Düzeltme: (N, S*C) gelirse -> (N, S, C) yap
+                if tab_logits.dim() == 2:
+                    # Muhtemelen (Batch*Time, Strings*Classes)
+                    S = self.config['instrument']['num_strings']
+                    C = self.config['model']['params']['num_classes']
+                    tab_logits = tab_logits.view(-1, S, C)
+                
+                # Loss için Flattening: 
+                # Logits -> (Total_Samples, Classes) -> (2000 * 6, 21)
+                # Targets -> (Total_Samples)         -> (2000 * 6)
+                
+                # (Batch*Time, Strings, Classes) -> Permute -> (Batch*Time, Classes, Strings) -> Yanlış olur
+                # Doğrusu: Her bir (Tel, Zaman) çifti bağımsız bir örnektir.
+                
+                # Logits: (N, S, C) -> (N*S, C)
+                flat_logits = tab_logits.reshape(-1, tab_logits.shape[-1])
+                
+                # Targets: (N, S) -> (N*S)
+                flat_targets = tab_targets.reshape(-1)
+                
+                losses['tablature'] = self.tab_loss_fn(flat_logits, flat_targets)
+
+            # --- 2. Hand Position Loss ---
+            if 'hand_pos_logits' in outputs:
+                # Logits: (N, Classes), Target: (N,)
+                # Zaten data loader bunu (B*T, C) ve (B*T) olarak veriyor olmalı
+                losses['hand_position'] = self.ce(outputs['hand_pos_logits'], targets['hand_pos_target'])
+                
+            # --- 3. String Activity Loss ---
+            if 'activity_logits' in outputs:
+                # BCE Loss (Logits ve Targets aynı boyutta olmalı)
+                # Logits: (N, 6), Target: (N, 6)
+                losses['string_activity'] = self.bce(outputs['activity_logits'], targets['activity_target'])
+                
+            # --- 4. Pitch Class Loss ---
+            if 'pitch_class_logits' in outputs:
+                losses['pitch_class'] = self.bce(outputs['pitch_class_logits'], targets['pitch_class_target'])
+                
+            # --- 5. Multipitch Loss ---
+            if 'multipitch_logits' in outputs:
+                losses['multipitch'] = self.bce(outputs['multipitch_logits'], targets['multipitch_target'])
+                
+            # --- 6. Onset Loss ---
+            if 'onset_logits' in outputs:
+                losses['onset'] = self.bce(outputs['onset_logits'], targets['onset_target'])
+                        
+            # --- Loss Aggregation ---
+            if self.strategy == 'uncertainty':
+                total_loss = self.uncertainty_wrapper(losses)
             else:
-                primary_loss = self.primary_loss_fn(tab_logits, tablature_target)
+                total_loss = losses.get('tablature', 0.0)
+                for key in losses:
+                    if key == 'tablature': continue
+                    weight_key = f"{key}_loss" 
+                    w = self.loss_config.get(weight_key, {}).get('weight', 1.0)
+                    total_loss += w * losses[key]
 
-        loss_dict['primary_loss'] = primary_loss.detach()
-        total_loss = primary_loss
-
-        if self.aux_enabled and 'multipitch_logits' in model_output:
-            multipitch_logits = model_output['multipitch_logits']
-            multipitch_target = batch['multipitch_target']
-            
-            if multipitch_logits.shape != multipitch_target.shape:
-                if multipitch_target.numel() == multipitch_logits.numel():
-                    multipitch_target = multipitch_target.reshape(multipitch_logits.shape)
-
-            aux_loss = self.auxiliary_loss_fn(multipitch_logits, multipitch_target)
-            total_loss += self.aux_weight * aux_loss
-            loss_dict['aux_loss'] = aux_loss.detach()
-            
-        if self.activity_enabled and 'activity_logits' in model_output:
-            activity_logits = model_output['activity_logits']
-            activity_target = batch['activity_target']
-            
-            if activity_logits.shape != activity_target.shape:
-                if activity_target.numel() == activity_logits.numel():
-                    activity_target = activity_target.reshape(activity_logits.shape)
-            
-            activity_loss = self.activity_loss_fn(activity_logits, activity_target)
-            total_loss += self.activity_weight * activity_loss
-            loss_dict['activity_loss'] = activity_loss.detach()
-
-        if self.onset_enabled and 'onset_logits' in model_output:
-            onset_logits = model_output['onset_logits']
-            onset_target = batch['onset_target']
-            onset_loss = self.onset_loss_fn(onset_logits, onset_target)
-            total_loss += self.onset_weight * onset_loss
-            loss_dict['onset_loss'] = onset_loss.detach()
-
-        if self.offset_enabled and 'offset_logits' in model_output:
-            offset_logits = model_output['offset_logits']
-            offset_target = batch['offset_target']
-            offset_loss = self.offset_loss_fn(offset_logits, offset_target)
-            total_loss += self.offset_weight * offset_loss
-            loss_dict['offset_loss'] = offset_loss.detach()
-
-        loss_dict['total_loss'] = total_loss
-        return loss_dict
+            loss_dict_out = {'total_loss': total_loss}
+            for k, v in losses.items():
+                loss_dict_out[f"{k}_loss"] = v
+                
+            return loss_dict_out

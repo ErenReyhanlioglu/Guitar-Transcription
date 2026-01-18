@@ -3,7 +3,7 @@ import torch
 import librosa
 from copy import deepcopy
 import logging
-from src.utils.logger import describe # Use the centralized describe function
+from src.utils.logger import describe 
 
 logger = logging.getLogger(__name__)
 
@@ -154,52 +154,58 @@ def logistic_to_tablature(preds_logistic, num_strings, num_classes, threshold=0.
     logger.debug(f"[logistic_to_tab] Returning fret_indices: {describe(fret_indices)}")
     return fret_indices
 
-def tablature_to_stacked_multi_pitch(tablature, profile):
-    logger.debug(f"[tab_to_smp] Fonksiyon başlatıldı. Gelen tablature: {describe(tablature)}")
+def tablature_to_stacked_multi_pitch(tablature, profile, include_silence, silence_class):
+    if isinstance(tablature, torch.Tensor):
+        tablature = tablature.long()
+    else:
+        tablature = tablature.astype(np.int64)
+    
+    logger.debug(f"[tab_to_smp] Tabşature: {describe(tablature)}")
     is_tensor = isinstance(tablature, torch.Tensor)
 
     if tablature.shape[-1] < tablature.shape[-2]:
-        logger.debug(f"[tab_to_smp] Boyutlar (..., T, S) formatında. (..., S, T) formatına çevriliyor.")
+        logger.debug(f"[tab_to_smp] Dims: (..., T, S) . Comverting: (..., S, T).")
         tablature = tablature.transpose(-1, -2) if is_tensor else np.swapaxes(tablature, -1, -2)
 
     original_dims = tablature.dim() if is_tensor else tablature.ndim
     if original_dims == 2:
         tablature = tablature.unsqueeze(0) if is_tensor else np.expand_dims(tablature, axis=0)
-        logger.debug(f"[tab_to_smp] Batch boyutu eklendi. Yeni boyut: {describe(tablature)}")
+        logger.debug(f"[tab_to_smp] Batch dim implemented. New dim: {describe(tablature)}")
 
     num_dofs, num_frames = tablature.shape[-2:]
     num_pitches = profile.get_range_len()
     
-    logger.debug(f"[tab_to_smp] Parametreler: Tel={num_dofs}, Zaman={num_frames}, Pitch Sayısı={num_pitches}")
+    logger.debug(f"[tab_to_smp] Parameters: String={num_dofs}, Time={num_frames}, Pitch Count={num_pitches}")
 
     stacked_multi_pitch_shape = tablature.shape[:-2] + (num_dofs, num_pitches, num_frames)
     
     if is_tensor:
         stacked_multi_pitch = torch.zeros(stacked_multi_pitch_shape, device=tablature.device)
         dof_start = torch.tensor(profile.get_midi_tuning(), device=tablature.device) - profile.low
-        dof_start = dof_start[None, :, None] # Broadcasting için (1, S, 1) şekline getir
+        dof_start = dof_start[None, :, None] 
     else:
         stacked_multi_pitch = np.zeros(stacked_multi_pitch_shape)
         tuning = np.array(profile.get_midi_tuning())
         dof_start = (tuning - profile.low)[np.newaxis, :, np.newaxis]
 
-    logger.debug(f"[tab_to_smp] 'dof_start' (akort offset) tensörü oluşturuldu: {describe(dof_start)}")
+    logger.debug(f"[tab_to_smp] 'dof_start' (akort offset) tensor created: {describe(dof_start)}")
 
-    non_silent_frames = tablature >= 0
+    if not include_silence:
+      non_silent_frames = (tablature >= 0) & (tablature != silence_class)
     pitch_idcs = (tablature + dof_start)[non_silent_frames]
     
     non_silent_count = torch.sum(non_silent_frames).item() if is_tensor else np.sum(non_silent_frames)
-    logger.debug(f"[tab_to_smp] Toplam {non_silent_count} adet aktif (non-silent) nota bulundu.")
+    logger.debug(f"[tab_to_smp] Total active non-silent note count: {non_silent_count}")
 
     if is_tensor:
         pitch_idcs = pitch_idcs.long()
         batch_idcs, string_idcs, frame_idcs = non_silent_frames.nonzero(as_tuple=True)
         stacked_multi_pitch[batch_idcs, string_idcs, pitch_idcs, frame_idcs] = 1
     else:
-        # Numpy için
+        # for numpy
         non_silent_idcs = non_silent_frames.nonzero()
         pitch_idcs = pitch_idcs.astype(np.int64)
-        # batch, string, frame indeksleri
+        # batch, string, frame index
         other_idcs = non_silent_idcs[:-1]
         frame_idcs = non_silent_idcs[-1]
         stacked_multi_pitch[other_idcs + (pitch_idcs, frame_idcs)] = 1

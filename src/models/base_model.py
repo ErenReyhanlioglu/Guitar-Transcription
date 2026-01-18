@@ -1,30 +1,40 @@
 import torch
 import torch.nn as nn
+import logging
+
+logger = logging.getLogger(__name__)
 
 class BaseTabModel(nn.Module):
     """
-    An abstract base class for tablature transcription models.
-    
-    This class ensures that all models share a common initialization
-    for the number of strings and classes, but it does not enforce a
-    specific output layer, allowing for flexibility (e.g., SoftmaxGroups or LogisticBank).
+    Base class for all guitar transcription models.
+    Provides common functionality for model initialization and summary.
     """
-    def __init__(self, num_strings: int, num_classes: int):
-        """
-        Initializes the base model with instrument properties.
-        
-        Args:
-            num_strings (int): The number of strings for the instrument (e.g., 6 for a guitar).
-            num_classes (int): The number of classes per string (e.g., number of frets + 1 for silence).
-        """
+    def __init__(self, config):
         super().__init__()
-        self.num_strings = num_strings
-        self.num_classes = num_classes
-
-    def forward(self, x: torch.Tensor) -> torch.Tensor:
-        """
-        Defines the forward pass of the model.
+        self.config = config
+        self.instrument_config = config['instrument']
+        self.num_strings = self.instrument_config['num_strings']
         
-        This method must be implemented by all subclasses.
+        # Tablature class count (19 frets + 1 open + 1 silence = 21)
+        self.num_classes_per_string = config['model']['params']['num_classes']
+        
+    def forward(self, x):
         """
-        raise NotImplementedError("Each model must implement its own forward method!")
+        Forward pass logic should be implemented by subclasses.
+        """
+        raise NotImplementedError
+
+    def __str__(self):
+        """
+        Returns a string representation of the model architecture and parameter count.
+        """
+        total_params = sum(p.numel() for p in self.parameters())
+        trainable_params = sum(p.numel() for p in self.parameters() if p.requires_grad)
+        
+        return (
+            f"\n--- Model Summary ---\n"
+            f"Architecture: {self.__class__.__name__}\n"
+            f"Total Parameters: {total_params:,}\n"
+            f"Trainable Parameters: {trainable_params:,}\n"
+            f"---------------------\n"
+        )

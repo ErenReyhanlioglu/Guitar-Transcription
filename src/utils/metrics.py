@@ -1,7 +1,7 @@
 import torch
 import numpy as np
 import scipy.ndimage as ndimage
-from sklearn.metrics import precision_score, recall_score, f1_score
+from sklearn.metrics import precision_score, recall_score, f1_score, accuracy_score
 from collections import Counter
 from tqdm import tqdm
 import logging
@@ -189,15 +189,14 @@ def compute_tablature_metrics(preds, targets, include_silence, silence_class):
     logger.debug(f"[tab_metrics] Returning results: {describe(results)}")
     return results
 
-
-def compute_multipitch_metrics(preds_tab, targets, profile):
+def compute_multipitch_metrics(preds_tab, targets, profile, include_silence, silence_class):
     logger.debug(f"[mp_metrics] Inputs - preds_tab: {describe(preds_tab)}, targets: {describe(targets)}")
     
     preds_tab_transposed = torch.from_numpy(preds_tab.cpu().numpy().T)
     targets_transposed = torch.from_numpy(targets.cpu().numpy().T)
     
-    preds_smp = tablature_to_stacked_multi_pitch(preds_tab_transposed, profile)
-    targets_smp = tablature_to_stacked_multi_pitch(targets_transposed, profile)
+    preds_smp = tablature_to_stacked_multi_pitch(preds_tab_transposed, profile, include_silence, silence_class)
+    targets_smp = tablature_to_stacked_multi_pitch(targets_transposed, profile, include_silence, silence_class)
     preds_mp = stacked_multi_pitch_to_multi_pitch(preds_smp)
     targets_mp = stacked_multi_pitch_to_multi_pitch(targets_smp)
     
@@ -239,44 +238,88 @@ def compute_octave_tolerant_metrics(preds_tab, targets_tab, tuning, silence_clas
     octave_targets[~valid_targets_mask] = -1
     octave_targets[targets_tab == silence_class] = num_pitch_classes
 
-    preds_flat = octave_preds.cpu().numpy().flatten()
-    targets_flat = octave_targets.cpu().numpy().flatten()
-    
-    active_mask = (targets_flat != -1) & (targets_flat != num_pitch_classes)
-    preds_flat = preds_flat[active_mask]
-    targets_flat = targets_flat[active_mask]
-    
+    preds_np = octave_preds.cpu().numpy()
+    targets_np = octave_targets.cpu().numpy()
+
+    # --- logistic style micro ---
+    def _to_logistic(tab_np: np.ndarray, silence: int, n_classes: int):
+        T, S = tab_np.shape
+        uniq = [u for u in np.unique(tab_np) if u not in (-1, silence)]
+        if len(uniq) == 0:
+            return np.zeros((T, S, 0), dtype=np.int8)
+        mapper = {c:i for i,c in enumerate(sorted(uniq))}
+        act = np.zeros((T, S, len(mapper)), dtype=np.int8)
+        valid = (tab_np != silence) & (tab_np >= 0)
+        rows, cols = np.where(valid)
+        eff_idx = np.vectorize(lambda x: mapper[x])(tab_np[valid])
+        act[rows, cols, eff_idx] = 1
+        return act
+
+    pred_act = _to_logistic(preds_np, num_pitch_classes, num_pitch_classes)
+    ref_act  = _to_logistic(targets_np, num_pitch_classes, num_pitch_classes)
+
+    C_eff = max(pred_act.shape[2], ref_act.shape[2]) if pred_act.ndim == 3 and ref_act.ndim == 3 else 0
+    if C_eff == 0:
+        return {
+            'octave_precision': 1.0, 'octave_recall': 1.0, 'octave_f1': 1.0,
+            'octave_precision_weighted': 1.0, 'octave_recall_weighted': 1.0, 'octave_f1_weighted': 1.0,
+            'octave_precision_macro': 1.0, 'octave_recall_macro': 1.0, 'octave_f1_macro': 1.0
+        }
+
+    # padding
+    if pred_act.shape[2] < C_eff:
+        pred_act = np.pad(pred_act, ((0,0),(0,0),(0, C_eff - pred_act.shape[2])), mode='constant')
+    if ref_act.shape[2] < C_eff:
+        ref_act = np.pad(ref_act, ((0,0),(0,0),(0, C_eff - ref_act.shape[2])), mode='constant')
+
+    est_f = pred_act.reshape(-1)
+    ref_f = ref_act.reshape(-1)
+
+    tp   = np.sum(est_f * ref_f)
+    pred = np.sum(est_f)
+    gt   = np.sum(ref_f)
+
+    eps = 1e-9
+    p_micro_log = float(tp / (pred + eps))
+    r_micro_log = float(tp / (gt   + eps))
+    f1_micro_log= float(0.0 if (p_micro_log + r_micro_log) == 0 else (2*p_micro_log*r_micro_log)/(p_micro_log+r_micro_log+eps))
+
+    # --- sklearn weighted & macro ---
+    preds_flat   = preds_np.flatten()
+    targets_flat = targets_np.flatten()
+
+    mask = (targets_flat != -1) & (targets_flat != num_pitch_classes)
+    preds_flat   = preds_flat[mask]
+    targets_flat = targets_flat[mask]
+
     if len(targets_flat) == 0:
         return {
-            'octave_f1': 1.0, 'octave_precision': 1.0, 'octave_recall': 1.0,
-            'octave_f1_weighted': 1.0, 'octave_precision_weighted': 1.0, 'octave_recall_weighted': 1.0,
-            'octave_f1_macro': 1.0, 'octave_precision_macro': 1.0, 'octave_recall_macro': 1.0
+            'octave_precision': 1.0, 'octave_recall': 1.0, 'octave_f1': 1.0,
+            'octave_precision_weighted': 1.0, 'octave_recall_weighted': 1.0, 'octave_f1_weighted': 1.0,
+            'octave_precision_macro': 1.0, 'octave_recall_macro': 1.0, 'octave_f1_macro': 1.0
         }
-    
-    p_micro = precision_score(targets_flat, preds_flat, average='micro', zero_division=0)
-    r_micro = recall_score(targets_flat, preds_flat, average='micro', zero_division=0)
-    f1_micro = f1_score(targets_flat, preds_flat, average='micro', zero_division=0)
 
-    p_w = precision_score(targets_flat, preds_flat, average='weighted', zero_division=0)
-    r_w = recall_score(targets_flat, preds_flat, average='weighted', zero_division=0)
-    f1_w = f1_score(targets_flat, preds_flat, average='weighted', zero_division=0)
-    
-    p_m = precision_score(targets_flat, preds_flat, average='macro', zero_division=0)
-    r_m = recall_score(targets_flat, preds_flat, average='macro', zero_division=0)
-    f1_m = f1_score(targets_flat, preds_flat, average='macro', zero_division=0)
-    
+    uniq_lbls = np.unique(np.concatenate([preds_flat, targets_flat]))
+    uniq_lbls = uniq_lbls[uniq_lbls >= 0].tolist()
+
+    p_w = precision_score(targets_flat, preds_flat, average='weighted', zero_division=0, labels=uniq_lbls)
+    r_w = recall_score   (targets_flat, preds_flat, average='weighted', zero_division=0, labels=uniq_lbls)
+    f1_w= f1_score      (targets_flat, preds_flat, average='weighted', zero_division=0, labels=uniq_lbls)
+
+    p_m = precision_score(targets_flat, preds_flat, average='macro',    zero_division=0, labels=uniq_lbls)
+    r_m = recall_score   (targets_flat, preds_flat, average='macro',    zero_division=0, labels=uniq_lbls)
+    f1_m= f1_score      (targets_flat, preds_flat, average='macro',     zero_division=0, labels=uniq_lbls)
+
     return {
-        'octave_precision': p_micro, 
-        'octave_recall': r_micro, 
-        'octave_f1': f1_micro,
-
-        'octave_precision_weighted': p_w, 
-        'octave_recall_weighted': r_w, 
-        'octave_f1_weighted': f1_w,
-
-        'octave_precision_macro': p_m, 
-        'octave_recall_macro': r_m, 
-        'octave_f1_macro': f1_m
+        'octave_precision': p_micro_log,
+        'octave_recall': r_micro_log,
+        'octave_f1': f1_micro_log,
+        'octave_precision_weighted': float(p_w),
+        'octave_recall_weighted': float(r_w),
+        'octave_f1_weighted': float(f1_w),
+        'octave_precision_macro': float(p_m),
+        'octave_recall_macro': float(r_m),
+        'octave_f1_macro': float(f1_m)
     }
 
 def _tab_to_midi_sets(tab_array, tuning, silence_class, ignore_index=-1):
@@ -287,53 +330,20 @@ def _tab_to_midi_sets(tab_array, tuning, silence_class, ignore_index=-1):
         frame_set = set()
         for s in range(num_strings):
             fret = tab_array[i, s]
-            # Sessizlik veya yoksayma indeksi olmayan perdeleri işle
             if fret != silence_class and fret != ignore_index:
                 midi_note = tuning[s] + fret
                 frame_set.add(midi_note)
         midi_sets.append(frame_set)
     return midi_sets
 
-def compute_tdr_old(preds_tab, targets_tab, tuning, silence_class):
-    if isinstance(preds_tab, torch.Tensor):
-        preds_tab = preds_tab.cpu().numpy()
-    if isinstance(targets_tab, torch.Tensor):
-        targets_tab = targets_tab.cpu().numpy()
-    
-    if preds_tab.shape[1] > preds_tab.shape[0]:
-        preds_tab = preds_tab.T
-    if targets_tab.shape[1] > targets_tab.shape[0]:
-        targets_tab = targets_tab.T
-
-    pred_midi_sets = _tab_to_midi_sets(preds_tab, tuning, silence_class)
-    target_midi_sets = _tab_to_midi_sets(targets_tab, tuning, silence_class)
-
-    n_correct_pitch_frames = 0
-    n_correct_tablature_frames = 0
-    num_frames = preds_tab.shape[0]
-
-    for i in range(num_frames):
-        if target_midi_sets[i] and pred_midi_sets[i] == target_midi_sets[i]:
-            n_correct_pitch_frames += 1
-            
-            if np.array_equal(preds_tab[i], targets_tab[i]):
-                n_correct_tablature_frames += 1
-
-    if n_correct_pitch_frames == 0:
-        return 1.0
-    
-    tdr = n_correct_tablature_frames / n_correct_pitch_frames
-    
-    return tdr
-
-def compute_tdr(preds_tab, targets_tab, profile):
+def compute_tdr(preds_tab, targets_tab, profile, include_silence, silence_class):
     if isinstance(preds_tab, torch.Tensor):
         preds_tab = preds_tab.cpu().numpy()
     if isinstance(targets_tab, torch.Tensor):
         targets_tab = targets_tab.cpu().numpy()
 
-    tablature_est_logistic = tablature_to_stacked_multi_pitch(preds_tab, profile)
-    tablature_ref_logistic = tablature_to_stacked_multi_pitch(targets_tab, profile)
+    tablature_est_logistic = tablature_to_stacked_multi_pitch(preds_tab, profile, include_silence, silence_class)
+    tablature_ref_logistic = tablature_to_stacked_multi_pitch(targets_tab, profile, include_silence, silence_class)
 
     num_correct_tablature = np.sum(tablature_est_logistic * tablature_ref_logistic)
 
@@ -522,3 +532,106 @@ def apply_duration_threshold(preds_tab, targets, min_duration_frames, silence_cl
     results_tuple = (processed_preds, stats)
     logger.debug(f"[duration_filter] Returning: {describe(results_tuple)}")
     return results_tuple
+
+import torch
+import numpy as np
+from sklearn.metrics import precision_score, recall_score, f1_score, accuracy_score
+
+def compute_hand_position_metrics(preds, targets, include_silence=True, silence_class=0):
+    """
+    Hand Position Metrics.
+    - silence_class: Veri setinde sessizliğin/açık telin kodu (Genelde 0).
+    - include_silence=False: Sadece elin pozisyon aldığı (target != 0) anları değerlendirir.
+    """
+    if isinstance(preds, torch.Tensor): preds = preds.cpu().numpy()
+    if isinstance(targets, torch.Tensor): targets = targets.cpu().numpy()
+    
+    preds_flat = preds.flatten()
+    targets_flat = targets.flatten()
+    
+    if not include_silence:
+        # Sessizlik olmayanları seç (Örn: Sınıf 0 dışındakiler)
+        mask = (targets_flat != silence_class)
+        if mask.sum() == 0:
+            return {
+                'hand_pos_acc': 1.0, 'hand_pos_precision': 1.0, 
+                'hand_pos_recall': 1.0, 'hand_pos_f1': 1.0
+            }
+        preds_flat = preds_flat[mask]
+        targets_flat = targets_flat[mask]
+    
+    # 'macro': Her sınıfın başarısını ayrı ayrı hesaplayıp ortalar (Sınıf dengesizliğinden daha az etkilenir).
+    p = precision_score(targets_flat, preds_flat, average='macro', zero_division=0)
+    r = recall_score(targets_flat, preds_flat, average='macro', zero_division=0)
+    f1 = f1_score(targets_flat, preds_flat, average='macro', zero_division=0)
+    acc = accuracy_score(targets_flat, preds_flat)
+    
+    return {
+        'hand_pos_acc': float(acc),
+        'hand_pos_precision': float(p),
+        'hand_pos_recall': float(r),
+        'hand_pos_f1': float(f1)
+    }
+
+def compute_string_activity_metrics(preds_logits, targets, include_silence=True, silence_class=None):
+    """
+    String Activity (Binary).
+    average='binary' kullanarak sadece AKTİF (1) tellerin başarısını ölçeriz.
+    Sessizliği (0) bilmek skoru etkilemez.
+    """
+    if isinstance(preds_logits, torch.Tensor):
+        preds_bin = (torch.sigmoid(preds_logits) > 0.5).int().cpu().numpy()
+    else:
+        preds_bin = (1 / (1 + np.exp(-preds_logits)) > 0.5).astype(int)
+        
+    if isinstance(targets, torch.Tensor): targets = targets.cpu().numpy()
+    
+    preds_flat = preds_bin.flatten()
+    targets_flat = targets.flatten()
+    
+    # average='binary': Sadece pozitif sınıf (1) için metrik hesaplar.
+    p = precision_score(targets_flat, preds_flat, average='binary', zero_division=0)
+    r = recall_score(targets_flat, preds_flat, average='binary', zero_division=0)
+    f1 = f1_score(targets_flat, preds_flat, average='binary', zero_division=0)
+    
+    return {
+        'string_act_precision': float(p),
+        'string_act_recall': float(r),
+        'string_act_f1': float(f1)
+    }
+
+def compute_pitch_class_metrics(preds_logits, targets, include_silence=True, silence_class=None):
+    """
+    Pitch Class (Multi-Label Binary).
+    average='samples' kullanarak her zaman dilimi (frame) için ayrı ayrı başarı hesaplar.
+    """
+    if isinstance(preds_logits, torch.Tensor):
+        preds_bin = (torch.sigmoid(preds_logits) > 0.5).int().cpu().numpy()
+    else:
+        preds_bin = (1 / (1 + np.exp(-preds_logits)) > 0.5).astype(int)
+        
+    if isinstance(targets, torch.Tensor): targets = targets.cpu().numpy()
+    
+    # average='samples': Her örnek (sample/frame) için F1 hesaplar ve ortalamasını alır.
+    # Müzikal analiz için en doğrusu budur.
+    p = precision_score(targets, preds_bin, average='samples', zero_division=0)
+    r = recall_score(targets, preds_bin, average='samples', zero_division=0)
+    f1 = f1_score(targets, preds_bin, average='samples', zero_division=0)
+    
+    return {
+        'pitch_class_precision': float(p),
+        'pitch_class_recall': float(r),
+        'pitch_class_f1': float(f1)
+    }
+
+def compute_aux_multipitch_metrics(preds_logits, targets, include_silence=True, silence_class=None):
+    """
+    Multipitch Head (Binary).
+    String Activity ile aynı 'binary' mantığını kullanır.
+    """
+    res = compute_string_activity_metrics(preds_logits, targets)
+    return {
+        'mp_head_precision': res['string_act_precision'],
+        'mp_head_recall': res['string_act_recall'],
+        'mp_head_f1': res['string_act_f1']
+    }
