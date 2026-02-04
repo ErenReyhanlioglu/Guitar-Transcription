@@ -88,23 +88,33 @@ Aşağıdaki tablo, modelin evrimini ve mimari bileşenlerin sistem başarımı 
 
 
 #### 5.2.1. Tablatür Tahmin Başarımı
-Modelin ürettiği tablatür çıktısı ile referans veri seti arasındaki uyum Şekil 1'de sunulmuştur:
+Şekil 1 ve Şekil 2, modelin ürettiği tablatür çıktısı ile referans veri seti arasındaki zamansal ve perde uyumunu göstermektedir:
 
 <p align="center">
-  <img src="assets/sample_tab_truth.jpg" width="45%" alt="Ground Truth Tablature">
-  <img src="assets/sample_tab_pred.png" width="45%" alt="Predicted Tablature">
+  <strong>Yer Gerçeği (Ground Truth)</strong><br>
+  <img src="assets/sample_tab_truth.jpg" width="100%" alt="Ground Truth Tablature">
+</p>
+
+<p align="center">
+  <strong>Model Tahmini (Prediction)</strong><br>
+  <img src="assets/sample_tab_pred.png" width="100%" alt="Predicted Tablature">
   <br>
-  <em>Şekil 1: Yer Gerçeği (Solda) ve Model Tahmini (Sağda) Tablatür Karşılaştırması.</em>
+  <em>Şekil 1: Tablatür Verilerinin Dikey Karşılaştırması. Deney(113013)</em>
 </p>
 
 #### 5.2.2. Pianoroll (Multi-pitch Estimation) Analizi
 Sistemin perde (pitch) düzeyindeki ayrıştırma kapasitesi, pianoroll gösterimi üzerinden doğrulanmıştır:
 
 <p align="center">
-  <img src="assets/sample_pianoroll_truth.png" width="45%" alt="Ground Truth Pianoroll">
-  <img src="assets/sample_pianoroll_pred.png" width="45%" alt="Predicted Pianoroll">
+  <strong>Ground Truth Pianoroll</strong><br>
+  <img src="assets/sample_pianoroll_truth.png" width="100%" alt="Ground Truth Pianoroll">
+</p>
+
+<p align="center">
+  <strong>Prediction Pianoroll</strong><br>
+  <img src="assets/sample_pianoroll_pred.png" width="100%" alt="Predicted Pianoroll">
   <br>
-  <em>Şekil 2: MIDI Düzeyinde Perde Kestirimi (Pianoroll) Karşılaştırması.</em>
+  <em>Şekil 2: MIDI Düzeyinde Perde Kestirimi Karşılaştırması. Deney(113013)</em>
 </p>
 
 ---
@@ -128,9 +138,9 @@ En başarılı model olan **113013** konfigürasyonunun hata dağılımı ve det
 Modelin yaptığı hataların zamansal dağılımı ve türleri `sample_tab_ERRORS.png` üzerinden analiz edilmiştir:
 
 <p align="center">
-  <img src="assets/sample_tab_ERRORS.png" width="90%" alt="Tablature Error Visualization">
+  <img src="assets/sample_tab_ERRORS.png" width="100%" alt="Tablature Error Visualization">
   <br>
-  <em>Şekil 3: Hata Tiplerinin Zamansal Dağılımı (TP: Doğru, FN: Eksik, FP: Yanlış Alarm, SUB: Yanlış Tel/Perde).</em>
+  <em>Şekil 3: Hata Tiplerinin Zamansal Dağılımı (TP: Doğru, FN: Eksik, FP: Yanlış Alarm, SUB: Yanlış Tel/Perde). Deney(113013)</em>
 </p>
 
 **Hata Analizi Çıkarımları:**
