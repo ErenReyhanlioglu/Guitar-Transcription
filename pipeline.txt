@@ -1,37 +1,41 @@
 /Automatic Guitar Transcription/
 ├── configs/                # Deney parametrelerini içeren .yaml dosyaları
-│   ├── tabcnn_config.yaml
-│   ├── fretnet_config.yaml
-	├── transformer_config.yaml
+│   ├── cnn_mtl_config.yaml
 │   └── ...
 │
 ├── outputs/                # Tüm eğitim çıktıları ve versiyonlanmış sonuçlar
-│   ├── TabCNN/
-│   │   └── V0_20250722_202900/ 
-│   │       ├── config.yaml
-│   │       ├── model_best.pt
-│   │       └── ...
+│   ├── cnn_mtl/
+│   │   └── V0/ 
+│   │		├── config.yaml
+│   │		├── k-fold_test_results.txt
+│   │		├── k-fold_val_results.txt
+│   │		└── fold_0
+│	│          	├── charts
+│	│          	├── analyze_errors
+│	│          	├── model_best.pt
+│	│          	└── ...
 │   └── ... 
 │
 └── src/                    # Projenin tüm Python kaynak kodu
     ├── __init__.py
     ├── data_loader.py      # Dataset sınıfı (.npz'leri okur)
     ├── trainer.py          # Eğitim, doğrulama ve test döngülerini yönetir
-    │
+    ├── evaluate.py
+	│
     ├── models/             # Model mimarilerinin bulunduğu klasör
     │   ├── __init__.py     # Modelleri çağırmak için fabrika fonksiyonu
     │   ├── base_model.py   # Tüm modellerin miras alacağı ortak temel sınıf
-    │   ├── tabcnn.py
-    │   ├── fretnet.py
-    │   └── transformer.py
+    │   └── cnn_mtl.py
     │
     └── utils/              # Yardımcı ve yeniden kullanılabilir fonksiyonlar
         ├── __init__.py
 		├── callbacks.py 
-        ├── experiment.py   # Otomatik deney klasörü oluşturma
-        ├── losses.py       # Özel kayıp fonksiyonları
+        ├── experiment.py   
+        ├── losses.py       
+		├── logger.py
         ├── metrics.py
 		├── analyze_errors.py		
 		├── guitar_profile.py
 		├── agt_tools.py		
-        └── plotting.py     # Sonuçları görselleştirme
+		├── config_helper.py
+        └── plotting.py
