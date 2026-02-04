@@ -92,7 +92,7 @@ Aşağıdaki tablo, modelin evrimini ve mimari bileşenlerin sistem başarımı 
 
 <p align="center">
   <strong>Yer Gerçeği (Ground Truth)</strong><br>
-  <img src="assets/sample_tab_truth.jpg" width="100%" alt="Ground Truth Tablature">
+  <img src="assets/sample_tab_truth.png" width="100%" alt="Ground Truth Tablature">
 </p>
 
 <p align="center">
