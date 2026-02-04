@@ -81,7 +81,7 @@ Aşağıdaki tablo, modelin evrimini ve mimari bileşenlerin sistem başarımı 
 | Deney ID | Model Mimarisi | Girdi Özellikleri | Tablature F1 | TDR | $E_{total}$ |
 | :--- | :--- | :--- | :--- | :--- | :--- |
 | **113013** | **Cascaded MTL** | **HCQT + Mel** | **0.7838** | **0.9454** | **0.3770** |
-| **090553** | Single-Task | HCQT + Mel | 0.7462 | 0.9180 | 0.4482 |
+| **090553** | Single-Task | HCQT + Mel | 0.7718 | 0.9331 | 0.3969 |
 | **122818** | Cascaded MTL | HCQT | 0.6863 | 0.8882 | 0.5512 |
 | **113720** | Single-Task | HCQT | 0.6348 | 0.8472 | 0.5755 |
 
