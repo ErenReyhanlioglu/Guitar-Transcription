@@ -87,32 +87,25 @@ Aşağıdaki tablo, modelin evrimini ve mimari bileşenlerin sistem başarımı 
 
 
 
-<p align="center">
-  <img src="assets/model_comparison.png" width="800" alt="Model Karşılaştırması">
-  <br>
-  <em>Şekil 1: Farklı konfigürasyonların F1 ve TDR (Tablature Disambiguation Rate) performans karşılaştırması.</em>
-</p>
-
-> **Analiz:** Şekil 1 incelendiğinde, hibrit öznitelik kullanımının (HCQT + Mel) sadece HCQT kullanımına göre F1 skorunda yaklaşık %10'luk bir artış sağladığı görülmektedir. Ayrıca, MTL yapısının devreye alınması, TDR skorunu en yüksek seviye olan **0.9454**'e taşıyarak tel kestirimi belirsizliğini minimize etmiştir.
-
----
-
-### 5.2. Görev Sinerjisi ve GCS Analizi
-
-Çok görevli öğrenme sürecinde ana görev (Tablature) ile yardımcı görevler arasındaki gradyan uyumu, **Gradient Cosine Similarity (GCS)** ile takip edilmiştir.
-
-
+#### 5.2.1. Tablatür Tahmin Başarımı
+Modelin ürettiği tablatür çıktısı ile referans veri seti arasındaki uyum Şekil 1'de sunulmuştur:
 
 <p align="center">
-  <img src="assets/gcs_analysis.png" width="700" alt="GCS Analizi">
+  <img src="assets/sample_tab_truth.jpg" width="45%" alt="Ground Truth Tablature">
+  <img src="assets/sample_tab_pred.png" width="45%" alt="Predicted Tablature">
   <br>
-  <em>Şekil 2: Eğitim boyunca görevler arası gradyan benzerliği (GCS) grafiği.</em>
+  <em>Şekil 1: Yer Gerçeği (Solda) ve Model Tahmini (Sağda) Tablatür Karşılaştırması.</em>
 </p>
 
-Dinamik kayıp ağırlıklandırma (Uncertainty Weighting) stratejisi sayesinde, görevler arasındaki sinerji şu formülasyonla optimize edilmiştir:
-$$L_{total} = \sum_{i \in Tasks} \frac{1}{2\sigma_i^2} L_i + \log \sigma_i$$
+#### 5.2.2. Pianoroll (Multi-pitch Estimation) Analizi
+Sistemin perde (pitch) düzeyindeki ayrıştırma kapasitesi, pianoroll gösterimi üzerinden doğrulanmıştır:
 
-Şekil 2'de görüldüğü üzere, eğitim ilerledikçe yardımcı görevlerin gradyanları pozitif bir hizalanmaya girerek ana görevin genelleme yeteneğini artırmıştır.
+<p align="center">
+  <img src="assets/sample_pianoroll_truth.png" width="45%" alt="Ground Truth Pianoroll">
+  <img src="assets/sample_pianoroll_pred.png" width="45%" alt="Predicted Pianoroll">
+  <br>
+  <em>Şekil 2: MIDI Düzeyinde Perde Kestirimi (Pianoroll) Karşılaştırması.</em>
+</p>
 
 ---
 
@@ -128,41 +121,23 @@ En başarılı model olan **113013** konfigürasyonunun hata dağılımı ve det
 | **Auxiliary** | Multipitch F1 | 0.8601 ± 0.0190 |
 | **Auxiliary** | String Activity F1 | 0.8390 ± 0.0141 |
 
-
-
-<p align="center">
-  <img src="assets/error_distribution.png" width="600" alt="Hata Dağılımı">
-  <br>
-  <em>Şekil 3: Toplam hata maliyetinin ($E_{total} = 0.3770$) bileşenlerine göre dağılımı.</em>
-</p>
-
-**Hata Ayrıştırması:**
-* **$E_{sub}$ (0.0471):** Düşük yer değiştirme hatası, sistemin perde tespitindeki rasyonel doğruluğunu kanıtlar.
-* **$E_{miss}$ (0.1848):** Hataların temel kaynağı, karmaşık polifonik pasajlardaki eksik tespitlerdir.
-
 ---
 
-### 5.4. Niteliksel Değerlendirme (Qualitative Analysis)
+### 5.4. Hata Tipi ve Karakteristiği (Error Visualization)
 
-Modelin gerçek zamanlı performansını anlamak için Ground Truth ve Prediction çıktıları karşılaştırılmıştır.
-
-
+Modelin yaptığı hataların zamansal dağılımı ve türleri `sample_tab_ERRORS.png` üzerinden analiz edilmiştir:
 
 <p align="center">
-  <img src="assets/qualitative_success.png" width="850" alt="Başarılı Tahmin Örneği">
+  <img src="assets/sample_tab_ERRORS.png" width="90%" alt="Tablature Error Visualization">
   <br>
-  <em>Şekil 4: Başarılı bir arpej transkripsiyonu örneğinde Ground Truth vs Prediction karşılaştırması.</em>
+  <em>Şekil 3: Hata Tiplerinin Zamansal Dağılımı (TP: Doğru, FN: Eksik, FP: Yanlış Alarm, SUB: Yanlış Tel/Perde).</em>
 </p>
 
-Şekil 4'te görüldüğü üzere model, aynı perdeye sahip notaların farklı tellerde icra edildiği durumları (disambiguation) başarıyla ayırt edebilmektedir. 
+**Hata Analizi Çıkarımları:**
+1. **Substitution (SUB) Hataları:** Mor renkle gösterilen yer değiştirme hataları, modelin doğru notayı (pitch) bulmasına rağmen yanlış tel kombinasyonunu seçtiği anları temsil eder. TDR skorunun 0.94 olması, bu hataların minimumda tutulduğunu kanıtlar.
+2. **False Negatives (FN):** Kırmızı alanlar, özellikle düşük genlikli veya hızlı polifonik geçişlerde modelin hassasiyet kaybı yaşadığı bölgelerdir.
+3. **Genel Kararlılık:** TP (Yeşil) blokların sürekliliği, modelin gitar transkripsiyonu görevinde State-of-the-Art (SOTA) hedefine uygun bir kararlılık sergilediğini göstermektedir.
 
-<p align="center">
-  <img src="assets/qualitative_challenge.png" width="850" alt="Zorlu Senaryo Analizi">
-  <br>
-  <em>Şekil 5: Yüksek polifoni ve düşük enerjili notaların bulunduğu zorlu bir pasajın analizi.</em>
-</p>
-
-Şekil 5'te işaretlenen bölgeler, sistemin $E_{miss}$ hatalarına yatkın olduğu, notaların spektral enerjisinin düşük olduğu anları göstermektedir. Bu alanlarda Onset kestirimi iyileştirmeleri hedeflenmektedir.
 
 ## 6. Proje Dizini ve Modüler Yapı
 
