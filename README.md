@@ -130,6 +130,8 @@ En başarılı model olan **113013** konfigürasyonunun hata dağılımı ve det
 | **Extra Metrics** | Octave-Tolerant F1 | 0.7840 ± 0.0314 |
 | **Auxiliary** | Multipitch F1 | 0.8601 ± 0.0190 |
 | **Auxiliary** | String Activity F1 | 0.8390 ± 0.0141 |
+| **Auxiliary** | Hand Position F1 | 0.8435 ± 0.0187 |
+| **Auxiliary** | Pitch Class F1 | 0.7177 ± 0.0666 |
 
 ---
 
