@@ -126,12 +126,18 @@ En başarılı model olan **113013** konfigürasyonunun hata dağılımı ve det
 | Kategori | Metrik | Değer |
 | :--- | :--- | :--- |
 | **Tablature (Micro)** | F1-Score | 0.7838 ± 0.0315 |
+| **Tablature (Micro)** | Precision | 0.8007 ± 0.0403 |
+| **Tablature (Micro)** | Recall | 0.7681 ± 0.0282 |
 | **Extra Metrics** | TDR (Disambiguation) | 0.9454 ± 0.0255 |
 | **Extra Metrics** | Octave-Tolerant F1 | 0.7840 ± 0.0314 |
 | **Auxiliary** | Multipitch F1 | 0.8601 ± 0.0190 |
 | **Auxiliary** | String Activity F1 | 0.8390 ± 0.0141 |
 | **Auxiliary** | Hand Position F1 | 0.8435 ± 0.0187 |
 | **Auxiliary** | Pitch Class F1 | 0.7177 ± 0.0666 |
+| **Error** | Substitution | 0.0471 ± 0.0237 |
+| **Error** | Miss (FN) | 0.1848 ± 0.0128 |
+| **Error** | False Alarm (FP) | 0.1451 ± 0.0271 |
+| **Error** | Total | 0.3770 ± 0.0435 |
 
 ---
 
