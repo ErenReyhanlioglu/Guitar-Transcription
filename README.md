@@ -161,13 +161,26 @@ Modelin yaptığı hataların zamansal dağılımı ve türleri `sample_tab_ERRO
 
 ```text
 ├── src/
-│   ├── models/           # CNN_MTL, SEBlock ve MultiScale mimari tanımları
-│   ├── trainer.py        # GCS takibi ve Uncertainty weighting döngüsü
-│   ├── data_loader.py    # HCQT/Mel işleme ve dinamik batch yönetimi
+│   └── __init__.py
+│   └── data_loader.py
+│   └── evaluate.py
+│   └── trainer.py
+│   ├── models/
+│   │   └── __init__.py
+│   │   └── base_model.py
+│   │   └── cnn_mtl.py
 │   ├── utils/
-│   │   ├── metrics.py    # Bilimsel metrik hesaplamaları (F1, TDR, vb.)
-│   │   ├── losses.py     # Focal Loss ve MultiTaskUncertaintyLoss
-│   │   └── plotting.py   # Aktivasyon matrisleri ve hata görselleri
+│   │   └── __init__.py
+│   │   └── agt_tools.py
+│   │   └── analyze_errors.py
+│   │   └── callbacks.py
+│   │   └── config_helpers.py
+│   │   └── experiment.py
+│   │   └── guitar_profile.py
+│   │   └── logger.py
+│   │   └── losses.py
+│   │   └── metrics.py
+│   │   └── plotting.py
 ├── configs/              # Deney konfigürasyonlarını içeren YAML dosyaları
 ├── CNN_MTL.ipynb         # Uçtan uca deney ve görselleştirme notebook'u
 └── train.py              # Deneyleri başlatan ana script
