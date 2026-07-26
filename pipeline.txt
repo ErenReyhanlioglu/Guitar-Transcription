@@ -1,7 +1,7 @@
 Guitar-Transcription/
 ├── assets/                      Architecture diagrams and result figures used in README.md
 ├── configs/
-│   └── cnn_mtl_config.yaml      Proposed HCQT+Mel Cascaded MT configuration (Table 1, dagger row)
+│   └── cnn_mtl_config.yaml      configuration
 ├── src/
 │   ├── __init__.py
 │   ├── data_loader.py           GuitarSet .npz dataset and dataloader construction
