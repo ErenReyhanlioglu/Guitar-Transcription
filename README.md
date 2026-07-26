@@ -224,7 +224,7 @@ Each fold trains one model (fold i holds out player i for testing and uses playe
     --data-root /path/to/output/enriched
 ```
 
-Per fold, this loads `fold_<n>/model_best.pt`, runs whole-track inference, grid-searches the silence-recovery probability threshold on the *validation* player only, and applies the winning threshold to the held-out *test* player. This separation matters: an earlier evaluation script in this project's history picked the threshold directly against the test set, a train/test leak that inflates reported numbers. `evaluate.py` is the corrected version and is what produces the numbers in Table 1. Results are written to `k-fold_test_results.txt` in the experiment directory.
+Per fold, this loads `fold_<n>/model_best.pt`, runs whole-track inference, grid-searches the silence-recovery probability threshold on the *validation* player only, and applies the winning threshold to the held-out *test* player.
 
 On Windows, pass `--num-workers 0` to `train.py`: multiprocessing DataLoader workers reliably segfault there, a PyTorch/Windows limitation unrelated to this code. See `terminal_cheatsheet.md` for this and other platform notes.
 
