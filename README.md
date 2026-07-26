@@ -16,6 +16,7 @@ On GuitarSet, under six-fold leave-one-player-out cross-validation, the proposed
 - [Results](#results)
 - [Repository structure](#repository-structure)
 - [Setup](#setup)
+- [Pretrained weights](#pretrained-weights)
 - [Reproducing the results](#reproducing-the-results)
 - [Dataset](#dataset)
 - [Citation](#citation)
@@ -194,6 +195,10 @@ uv pip install --python .venv-extract/bin/python numpy librosa "setuptools<81" \
 This needs its own environment because `guitar-transcription-continuous` depends on `muda`, an unmaintained package whose setup script imports the `imp` standard-library module, which was removed in Python 3.12. It builds fine under 3.11. The `setuptools<81` pin is also required: `muda` still imports `pkg_resources`, which setuptools >=81 no longer ships. This step is only needed once, to go from raw GuitarSet audio to `.npz` files; it is not required for training or evaluation once those files exist.
 
 Full flag-by-flag documentation for every script is in [`terminal_cheatsheet.md`](terminal_cheatsheet.md).
+
+## Pretrained weights
+
+Trained checkpoints for the proposed HCQT+Mel Cascaded MT configuration (all six folds) are hosted separately in [Guitar-Transcription-Weights](https://github.com/ErenReyhanlioglu/Guitar-Transcription-Weights) to keep this repository lightweight.
 
 ## Reproducing the results
 
