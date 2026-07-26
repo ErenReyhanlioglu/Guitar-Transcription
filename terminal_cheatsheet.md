@@ -125,10 +125,9 @@ without retraining:
 | `--data-root` | Overrides the dataset's `data_root` from the config. |
 | `--folds` | Comma-separated **1-based** fold numbers to evaluate, e.g. `1,2`. Default: every `fold_*` directory found. |
 
-This is the leak-free evaluation path (threshold/duration grid search on the
-*validation* player only, applied to the held-out *test* player) — not the
-retired `src/evaluate.py`. Writes `k-fold_test_results.txt` into
-`--experiment-path`.
+This is the leak-free evaluation path: threshold/duration grid search on the
+*validation* player only, applied to the held-out *test* player. Writes
+`k-fold_test_results.txt` into `--experiment-path`.
 
 ## 4. Type checking
 
