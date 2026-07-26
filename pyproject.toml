@@ -1,0 +1,61 @@
+[project]
+name = "guitar-transcription"
+version = "0.1.0"
+description = "Cascaded Multi-Task Learning for Automatic Guitar Tablature Transcription"
+readme = "README.md"
+requires-python = "==3.12.*"
+dependencies = [
+    "torch==2.9.0",
+    "torchaudio==2.9.0",
+    "torchvision==0.24.0",
+    "numpy==2.0.2",
+    "pandas==2.2.2",
+    "scipy==1.16.3",
+    "scikit-learn==1.6.1",
+    "librosa==0.11.0",
+    "soundfile==0.13.1",
+    "jams==0.3.5",
+    "mir_eval==0.8.2",
+    "matplotlib==3.10.0",
+    "seaborn==0.13.2",
+    "tensorboard==2.19.0",
+    "torchinfo==1.8.0",
+    "tqdm==4.67.1",
+    "pyyaml==6.0.3",
+    "ipython==7.34.0",
+    # Not imported by any code here — src/utils/experiment.py shells out to
+    # `python -m pip freeze` to snapshot environment.txt per experiment. `uv sync`
+    # prunes anything not declared as a dependency, so without this line pip
+    # disappears from .venv on every sync and that snapshot step silently fails.
+    "pip==26.1.2",
+]
+
+[dependency-groups]
+dev = [
+    "pytest==8.4.2",
+]
+# NOTE: extract_features.py's dependencies (amt-tools, guitar-transcription-continuous)
+# are intentionally NOT listed here. guitar-transcription-continuous pulls in `muda`,
+# an unmaintained package whose setup.py does `import imp` — a stdlib module removed in
+# Python 3.12, so it cannot be installed into this project's Python 3.12 environment.
+# It builds fine under Python 3.11, which is what GuitarSet feature extraction was
+# actually run under historically. See extract_features.py's docstring / README for the
+# separate .venv-extract (Python 3.11) setup this stage needs.
+
+[tool.uv]
+# The golden run that produced the paper's numbers used torch==2.9.0+cu126 (A100,
+# CUDA 12.6). Pull torch/torchaudio/torchvision from PyTorch's own CUDA 12.6 index
+# on Windows/Linux so `uv sync` gets GPU-enabled wheels by default, matching that
+# environment. macOS has no CUDA wheels on this index; torch there falls back to
+# PyPI's CPU-only build automatically (uv tries indexes in order per `torch` entry
+# below, but PyPI isn't listed as a fallback here — macOS users should drop the
+# [tool.uv.sources] entries below and reinstall from plain PyPI if needed).
+[tool.uv.sources]
+torch = [{ index = "pytorch-cu126", marker = "sys_platform == 'win32' or sys_platform == 'linux'" }]
+torchvision = [{ index = "pytorch-cu126", marker = "sys_platform == 'win32' or sys_platform == 'linux'" }]
+torchaudio = [{ index = "pytorch-cu126", marker = "sys_platform == 'win32' or sys_platform == 'linux'" }]
+
+[[tool.uv.index]]
+name = "pytorch-cu126"
+url = "https://download.pytorch.org/whl/cu126"
+explicit = true

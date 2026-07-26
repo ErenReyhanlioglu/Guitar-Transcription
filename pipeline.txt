@@ -1,0 +1,35 @@
+Guitar-Transcription/
+├── assets/                      Architecture diagrams and result figures used in README.md
+├── configs/
+│   └── cnn_mtl_config.yaml      Proposed HCQT+Mel Cascaded MT configuration (Table 1, dagger row)
+├── src/
+│   ├── __init__.py
+│   ├── data_loader.py           GuitarSet .npz dataset and dataloader construction
+│   ├── trainer.py               Training loop, checkpointing, GCS diagnostic
+│   ├── models/
+│   │   ├── __init__.py          Model factory (get_model)
+│   │   ├── base_model.py        Common base class for all model architectures
+│   │   └── cnn_mtl.py           The cascaded multi-task architecture
+│   └── utils/
+│       ├── __init__.py
+│       ├── agt_tools.py         Tablature / multi-pitch / logistic representation conversions
+│       ├── analyze_errors.py    Confusion matrices and per-string error analysis
+│       ├── callbacks.py         Early stopping / checkpoint-selection callbacks
+│       ├── config_helpers.py    Config processing, optimizer/scheduler/device construction
+│       ├── experiment.py        Experiment directory creation and report generation
+│       ├── guitar_profile.py    Instrument tuning/fret-range profile
+│       ├── logger.py            Logging setup (UTF-8 console output)
+│       ├── losses.py            Focal loss, uncertainty-weighted multi-task loss
+│       ├── metrics.py           Tablature/TDR/multi-pitch/error-rate metric computation
+│       └── plotting.py          Loss curves, spectrograms, tablature/pianoroll visualizations
+├── extract_features.py          Raw GuitarSet audio -> feature-enriched .npz files
+├── train.py                     Six-fold cross-validation training entry point
+├── evaluate.py                  Leak-free evaluation pipeline (produces the paper's reported numbers)
+├── pyproject.toml               Dependencies, managed with uv
+├── uv.lock                      Locked dependency versions
+├── terminal_cheatsheet.md       Full CLI reference for every script in this repo
+├── LICENSE
+└── README.md
+
+Output directories (--output-root, --data-root, etc.) are supplied via CLI arguments or
+config paths at runtime; nothing under outputs/ or data/ is part of the repository itself.
