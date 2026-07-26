@@ -170,6 +170,8 @@ Guitar-Transcription/
 
 ## Setup
 
+> **Note:** All results reported in the paper were produced on Google Colab. This repository exists to share the code itself; the setup below documents a standalone local environment and is provided for reference/reproducibility rather than reflecting the authors' own development setup.
+
 Dependencies are managed with [uv](https://docs.astral.sh/uv/) and pinned in `pyproject.toml`. Two separate environments are needed:
 
 **Main environment (Python 3.12), for `train.py` and `evaluate.py`:**
