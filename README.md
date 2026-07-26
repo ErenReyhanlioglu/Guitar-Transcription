@@ -141,10 +141,10 @@ Six ablation configurations were evaluated on GuitarSet with six-fold cross-vali
 Guitar-Transcription/
 ├── assets/                      Architecture diagrams and result figures used in this README
 ├── configs/
-│   └── cnn_mtl_config.yaml      Proposed HCQT+Mel Cascaded MT configuration (Table 1, dagger row)
+│   └── cnn_mtl_config.yaml      configuration
 ├── src/
 │   ├── data_loader.py           GuitarSet .npz dataset and dataloader construction
-│   ├── trainer.py                Training loop, checkpointing, GCS diagnostic
+│   ├── trainer.py               Training loop, checkpointing, GCS diagnostic
 │   ├── models/
 │   │   ├── base_model.py
 │   │   └── cnn_mtl.py            The cascaded multi-task architecture
