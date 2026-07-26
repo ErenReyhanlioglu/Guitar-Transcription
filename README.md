@@ -161,7 +161,7 @@ Guitar-Transcription/
 │       └── plotting.py
 ├── extract_features.py          Raw GuitarSet audio -> feature-enriched .npz files
 ├── train.py                     Six-fold cross-validation training entry point
-├── evaluate.py                  Leak-free evaluation pipeline (produces the paper's reported numbers)
+├── evaluate.py                  Evaluation pipeline
 ├── pyproject.toml               Dependencies, managed with uv
 ├── terminal_cheatsheet.md       Full CLI reference for every script in this repo
 ├── LICENSE
