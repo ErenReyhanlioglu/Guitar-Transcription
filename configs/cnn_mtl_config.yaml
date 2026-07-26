@@ -1,6 +1,6 @@
 # ------------------ General Project Information ------------------
-project_name: "Automatic_Guitar_Transcription"
-experiment_name: "cascaded hcqt + mel"
+project_name: "project_name"
+experiment_name: "experiment_name"
 
 # ------------------ Output Location ------------------
 paths:
