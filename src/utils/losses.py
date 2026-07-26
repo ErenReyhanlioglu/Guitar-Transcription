@@ -87,14 +87,15 @@ class CombinedLoss(nn.Module):
         self.config = config
         self.loss_config = config['loss']
 
-        # --- CONFIG FIX ---
-        # Flexibly find the heads parameter
+        # heads can live under model.params.heads (current schema) or model.heads
+        # (older configs); accept both so legacy config files keep working.
         model_params = config['model'].get('params', {})
         if 'heads' in model_params:
             self.heads_config = model_params['heads']
         else:
-            self.heads_config = config['model'].get('heads', {}) # Fallback
-            
+            self.heads_config = config['model'].get('heads', {})
+
+
         self.device = config['training']['device']
                 
         tab_conf = self.loss_config.get('tablature_loss', {})

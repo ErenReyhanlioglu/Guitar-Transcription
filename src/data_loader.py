@@ -281,7 +281,7 @@ def prepare_dataset_files(config: dict) -> tuple[np.ndarray, list[str]]:
         raise FileNotFoundError(
             f"'{dataset_name}.data_root' does not exist: {data_root}\n"
             f"Point it at a directory of feature-enriched .npz files "
-            f"(see scripts/extract_features.py) via the config or --data-root."
+            f"(see extract_features.py) via the config or --data-root."
         )
 
     all_files = sorted(f for f in os.listdir(data_root) if f.endswith(".npz"))

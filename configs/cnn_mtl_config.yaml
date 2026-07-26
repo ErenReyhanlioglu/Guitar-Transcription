@@ -12,8 +12,8 @@ paths:
 # ------------------ Dataset and Feature Definitions ------------------
 dataset: "GuitarSet"
 GuitarSet:
-    # Directory of feature-enriched .npz files produced by scripts/extract_features.py.
-    # No default on purpose: pass --data-root on the CLI (see train.py / scripts/evaluate_kfold.py)
+    # Directory of feature-enriched .npz files produced by extract_features.py.
+    # No default on purpose: pass --data-root on the CLI (see train.py / evaluate.py)
     # or override this key in a local config copy. Never hardcode a machine-specific path here.
     data_root: null
     feature_to_file_map:
@@ -98,7 +98,7 @@ loss:
   weighting_strategy: "uncertainty" # "uncertainty" or "static"
 
   grad_cos_sim:
-    enabled: false
+    enabled: true
     threshold: 0.0
 
   tablature_loss:
@@ -156,7 +156,7 @@ training:
       ReduceLROnPlateau: {params: {monitor: "val_tab_f1", mode: "max", factor: 0.5, patience: 6, min_lr: 1.0e-6}}
       StepLR: {params: {step_size: 10, gamma: 0.5}}
 
-  epochs: 1
+  epochs: 200
   device: "cuda"
   use_mixed_precision: true
 
@@ -198,4 +198,3 @@ logging_and_checkpointing:
     src.utils.agt_tools: "INFO"
     src.utils.experiment: "INFO"
     src.utils.analyze_errors: "INFO"
-    scripts.evaluate_kfold: "INFO"

@@ -186,12 +186,12 @@ uv sync
 
 ```bash
 uv venv --python 3.11 .venv-extract
-uv pip install --python .venv-extract/bin/python numpy librosa \
+uv pip install --python .venv-extract/bin/python numpy librosa "setuptools<81" \
     "amt-tools @ git+https://github.com/cwitkowitz/amt-tools" \
     "guitar-transcription-continuous @ git+https://github.com/cwitkowitz/guitar-transcription-continuous"
 ```
 
-This needs its own environment because `guitar-transcription-continuous` depends on `muda`, an unmaintained package whose setup script imports the `imp` standard-library module, which was removed in Python 3.12. It builds fine under 3.11. This step is only needed once, to go from raw GuitarSet audio to `.npz` files; it is not required for training or evaluation once those files exist.
+This needs its own environment because `guitar-transcription-continuous` depends on `muda`, an unmaintained package whose setup script imports the `imp` standard-library module, which was removed in Python 3.12. It builds fine under 3.11. The `setuptools<81` pin is also required: `muda` still imports `pkg_resources`, which setuptools >=81 no longer ships. This step is only needed once, to go from raw GuitarSet audio to `.npz` files; it is not required for training or evaluation once those files exist.
 
 Full flag-by-flag documentation for every script is in [`terminal_cheatsheet.md`](terminal_cheatsheet.md).
 
