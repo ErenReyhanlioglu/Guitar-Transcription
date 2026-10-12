@@ -176,6 +176,20 @@ def find_best_postproc(logits: torch.Tensor, targets: torch.Tensor, config: dict
     return best_thresh, best_dur
 
 
+def apply_silence_threshold(tab_logits: torch.Tensor, threshold: float, silence_class: int) -> torch.Tensor:
+    """Argmax per string, then reassigns silence to the most probable fret when that fret's
+    probability exceeds `threshold`."""
+    probs = torch.softmax(tab_logits, dim=-1)
+    preds = torch.argmax(tab_logits, dim=-1)
+    logits_notes = tab_logits.clone()
+    logits_notes[:, :, silence_class] = -float("inf")
+    best_note_idx = torch.argmax(logits_notes, dim=-1)
+    best_note_prob = torch.gather(probs, 2, best_note_idx.unsqueeze(-1)).squeeze(-1)
+    mask = (preds == silence_class) & (best_note_prob > threshold)
+    preds[mask] = best_note_idx[mask]
+    return preds
+
+
 def evaluate_fold(inference: dict, threshold: float, min_duration: int, config: dict) -> dict:
     """Applies the silence-recovery threshold and minimum-duration filter, then scores predictions.
 
@@ -191,16 +205,7 @@ def evaluate_fold(inference: dict, threshold: float, min_duration: int, config: 
     tuning = config["instrument"]["tuning"]
     profile = GuitarProfile(config["instrument"])
 
-    probs = torch.softmax(tab_logits, dim=-1)
-    base_preds = torch.argmax(tab_logits, dim=-1)
-    logits_notes = tab_logits.clone()
-    logits_notes[:, :, silence_class] = -float("inf")
-    best_note_idx = torch.argmax(logits_notes, dim=-1)
-    best_note_prob = torch.gather(probs, 2, best_note_idx.unsqueeze(-1)).squeeze(-1)
-
-    preds = base_preds.clone()
-    mask = (preds == silence_class) & (best_note_prob > threshold)
-    preds[mask] = best_note_idx[mask]
+    preds = apply_silence_threshold(tab_logits, threshold, silence_class)
 
     preds_np = preds.numpy()
     for s in range(preds_np.shape[1]):
