@@ -26,6 +26,7 @@ import scipy.ndimage as ndimage
 import torch
 import torch.nn.functional as F
 import yaml
+from sklearn.metrics import f1_score
 from typing import cast
 
 from src.data_loader import fold_split, prepare_dataset_files
@@ -36,20 +37,38 @@ from src.utils.guitar_profile import GuitarProfile
 from src.utils.logger import setup_logger
 from src.utils.metrics import (
     compute_aux_multipitch_metrics,
+    compute_hand_position_metrics,
     compute_multipitch_metrics,
+    compute_pitch_class_metrics,
+    compute_string_activity_metrics,
     compute_tablature_error_scores,
     compute_tablature_metrics,
     compute_tdr,
+    string_assignment_breakdown,
 )
 
 logger = logging.getLogger(__name__)
 
 
-def full_track_inference(paths: list[str], model, config: dict, device: torch.device):
+# (model output key, short name, array in the .npz file) for the auxiliary heads scored on test
+AUX_OUTPUTS = [("hand_pos_logits", "hp", "hand_position"),
+               ("activity_logits", "sa", "string_activity"),
+               ("pitch_class_logits", "pc", "pitch_class")]
+
+
+def full_track_inference(paths: list[str], model, config: dict, device: torch.device) -> dict:
     """Runs inference over whole tracks (not fixed-size training chunks).
 
     Slides the model's context window across each full track in CHUNK-sized
     pieces, unfolding each piece into the model's expected window batches.
+    Padded frames at the end of a track's last chunk are dropped.
+
+    Returns:
+        A dict of frame-aligned tensors: 'tab' (tablature logits, frames x strings
+        x classes) and 'tgt' (reference frets), plus for each auxiliary head the
+        model has, its logits and reference: 'mp'/'mp_tgt' (multi-pitch),
+        'hp'/'hp_tgt' (fret region), 'sa'/'sa_tgt' (string activity),
+        'pc'/'pc_tgt' (pitch class). Missing heads map to None.
     """
     chunk_size = config["data"].get("framify_chunk_size", 500)
     window_size = config["data"].get("framify_window_size", 19)
@@ -65,7 +84,7 @@ def full_track_inference(paths: list[str], model, config: dict, device: torch.de
     num_strings = config["instrument"]["num_strings"]
     num_classes = config["model"]["params"]["num_classes"]
 
-    all_tab_logits, all_mp_logits, all_mp_targets, all_targets = [], [], [], []
+    store = {k: [] for k in ("tab", "tgt", "mp", "mp_tgt", "hp", "hp_tgt", "sa", "sa_tgt", "pc", "pc_tgt")}
 
     model.eval()
     with torch.no_grad():
@@ -75,6 +94,7 @@ def full_track_inference(paths: list[str], model, config: dict, device: torch.de
             total_frames = data[first_key].shape[-1]
             tablature = data["tablature"].astype(np.int64)
             tablature[tablature == -1] = silence_class
+            aux_full = {short: np.asarray(data[key]) for _, short, key in AUX_OUTPUTS if key in data}
 
             num_chunks = math.ceil(total_frames / chunk_size)
             for chunk_idx in range(num_chunks):
@@ -95,38 +115,30 @@ def full_track_inference(paths: list[str], model, config: dict, device: torch.de
                     features[feature_key] = tensor.reshape(b * t, ch, freq, w).to(device)
 
                 output = model(features)
-                tab_logits = output["tab_logits"].view(-1, num_strings, num_classes).cpu()
                 valid = end - start
-                all_tab_logits.append(tab_logits[:valid])
+                store["tab"].append(output["tab_logits"].view(-1, num_strings, num_classes).float().cpu()[:valid])
+                tab_chunk = tablature[:, start:end]
+                store["tgt"].append(torch.from_numpy(np.ascontiguousarray(tab_chunk.T)))
 
                 if "multipitch_logits" in output:
-                    mp_logits = output["multipitch_logits"].cpu()
-                    all_mp_logits.append(mp_logits[:valid])
-
-                    tab_chunk_valid = tablature[:, start:end]
+                    store["mp"].append(output["multipitch_logits"].float().cpu()[:valid])
                     mp_target = np.zeros((valid, num_pitches), dtype=np.float32)
-                    for s in range(tab_chunk_valid.shape[0]):
-                        for t_idx in range(valid):
-                            fret = tab_chunk_valid[s, t_idx]
-                            if fret != silence_class:
-                                midi = tuning[s] + fret
-                                if min_midi <= midi <= max_midi:
-                                    mp_target[t_idx, midi - min_midi] = 1.0
-                    all_mp_targets.append(torch.from_numpy(mp_target))
+                    for s in range(tab_chunk.shape[0]):
+                        frets = tab_chunk[s]
+                        midi = tuning[s] + frets
+                        on = (frets != silence_class) & (midi >= min_midi) & (midi <= max_midi)
+                        mp_target[np.where(on)[0], midi[on] - min_midi] = 1.0
+                    store["mp_tgt"].append(torch.from_numpy(mp_target))
 
-                tab_chunk = tablature[:, start:end]
-                if pad_len > 0:
-                    tab_chunk = np.pad(tab_chunk, ((0, 0), (0, pad_len)), constant_values=silence_class)
-                all_targets.append(torch.from_numpy(tab_chunk.T[:valid]))
+                for out_key, short, _ in AUX_OUTPUTS:
+                    if out_key in output and short in aux_full:
+                        y = aux_full[short][..., start:end]
+                        store[short].append(output[out_key].float().cpu()[:valid])
+                        store[short + "_tgt"].append(torch.from_numpy(np.ascontiguousarray(y.T if y.ndim == 2 else y)))
 
             data.close()
 
-    tab_logits_cat = torch.cat(all_tab_logits, dim=0)
-    mp_logits_cat = torch.cat(all_mp_logits, dim=0) if all_mp_logits else None
-    mp_targets_cat = torch.cat(all_mp_targets, dim=0) if all_mp_targets else None
-    targets_cat = torch.cat(all_targets, dim=0)
-
-    return tab_logits_cat, mp_logits_cat, mp_targets_cat, targets_cat
+    return {k: (torch.cat(v, 0) if v else None) for k, v in store.items()}
 
 
 def find_best_postproc(logits: torch.Tensor, targets: torch.Tensor, config: dict) -> tuple[float, int]:
@@ -164,16 +176,17 @@ def find_best_postproc(logits: torch.Tensor, targets: torch.Tensor, config: dict
     return best_thresh, best_dur
 
 
-def evaluate_fold(tab_logits: torch.Tensor, mp_logits, mp_targets, targets: torch.Tensor,
-                   threshold: float, min_duration: int, config: dict) -> dict:
+def evaluate_fold(inference: dict, threshold: float, min_duration: int, config: dict) -> dict:
     """Applies the silence-recovery threshold and minimum-duration filter, then scores predictions.
 
     Recovers low-confidence silence predictions above `threshold`, drops
     predicted note segments shorter than `min_duration` frames back to
-    silence, and computes the paper's full metric set (tablature,
-    TDR, multi-pitch, error-rate breakdown, and — if `mp_logits`/`mp_targets`
-    are given — the auxiliary multi-pitch head's own metrics) against `targets`.
+    silence, and computes the paper's full metric set: tablature, TDR,
+    multi-pitch, the error-rate breakdown, the wrong-string breakdown, and the
+    accuracy of every auxiliary head present in `inference` (see
+    `full_track_inference`).
     """
+    tab_logits, targets = inference["tab"], inference["tgt"]
     silence_class = config["instrument"]["silence_class"]
     tuning = config["instrument"]["tuning"]
     profile = GuitarProfile(config["instrument"])
@@ -216,18 +229,37 @@ def evaluate_fold(tab_logits: torch.Tensor, mp_logits, mp_targets, targets: torc
         "tab_error_substitution_rate": err_res.get("tab_error_substitution_rate", 0.0),
         "tab_error_miss_rate": err_res.get("tab_error_miss_rate", 0.0),
         "tab_error_false_alarm_rate": err_res.get("tab_error_false_alarm_rate", 0.0),
+        "tab_error_duplicate_pitch_rate": err_res.get("tab_error_duplicate_pitch_rate", 0.0),
         "best_threshold": threshold,
         "best_min_duration": min_duration,
+        "n_test_frames": int(targets.shape[0]),
     }
 
-    if mp_logits is not None and mp_targets is not None:
-        aux_res = compute_aux_multipitch_metrics(mp_logits, mp_targets, False)
+    if inference["mp"] is not None:
+        aux_res = compute_aux_multipitch_metrics(inference["mp"], inference["mp_tgt"], False)
         result.update({
             "aux_mp_f1": aux_res.get("mp_head_f1", 0.0),
             "aux_mp_precision": aux_res.get("mp_head_precision", 0.0),
             "aux_mp_recall": aux_res.get("mp_head_recall", 0.0),
         })
+    if inference["hp"] is not None:
+        # Fret-region accuracy: over all frames, and over frames with a fretted note (the paper's Table 7).
+        hp_pred = torch.argmax(inference["hp"], dim=-1)
+        hp_true = inference["hp_tgt"]
+        hp_true = (torch.argmax(hp_true, dim=-1) if hp_true.dim() == 2 else hp_true).long().reshape(-1)
+        result["hand_pos_acc_all_frames"] = float((hp_pred == hp_true).float().mean())
+        result.update(compute_hand_position_metrics(hp_pred, hp_true, False, silence_class=0))
+    if inference["sa"] is not None:
+        result.update(compute_string_activity_metrics(inference["sa"], inference["sa_tgt"].float(), False))
+    if inference["pc"] is not None:
+        result.update(compute_pitch_class_metrics(inference["pc"], inference["pc_tgt"].float(), False))
+        pc_pred = (torch.sigmoid(inference["pc"]) > 0.5).int().numpy().reshape(-1)
+        result["pitch_class_f1_micro_frame"] = float(
+            f1_score(inference["pc_tgt"].int().numpy().reshape(-1), pc_pred, average="binary", zero_division=0))  # type: ignore[reportArgumentType]
 
+    result["string_assignment"] = string_assignment_breakdown(
+        preds, targets, tuning, config["instrument"]["num_frets"], silence_class)
+    result["one_minus_tdr"] = 1.0 - tdr_val
     return result
 
 
@@ -239,7 +271,8 @@ def write_summary(fold_results: list[dict], experiment_path: str) -> str:
         The path to the written summary file.
     """
     metrics_tab = ["tab_f1", "tab_precision", "tab_recall", "tdr", "tab_mp_f1", "tab_mp_precision", "tab_mp_recall"]
-    metrics_aux = ["aux_mp_f1", "aux_mp_precision", "aux_mp_recall"]
+    metrics_aux = ["aux_mp_f1", "aux_mp_precision", "aux_mp_recall", "hand_pos_acc",
+                   "hand_pos_acc_all_frames", "string_act_f1", "pitch_class_f1"]
     metrics_err = ["tab_error_total_rate", "tab_error_substitution_rate",
                    "tab_error_miss_rate", "tab_error_false_alarm_rate"]
 
@@ -251,8 +284,8 @@ def write_summary(fold_results: list[dict], experiment_path: str) -> str:
         if vals:
             lines.append(f"  {key:<30} mean={np.mean(vals):.4f}  std={np.std(vals):.4f}\n")
 
-    if any("aux_mp_f1" in r for r in fold_results):
-        lines.append("\n[Aux Multipitch Head]\n")
+    if any(k in r for r in fold_results for k in metrics_aux):
+        lines.append("\n[Auxiliary Heads]\n")
         for key in metrics_aux:
             vals = [r[key] for r in fold_results if key in r]
             if vals:
@@ -263,6 +296,20 @@ def write_summary(fold_results: list[dict], experiment_path: str) -> str:
         vals = [r[key] for r in fold_results if key in r]
         if vals:
             lines.append(f"  {key:<35} mean={np.mean(vals):.4f}  std={np.std(vals):.4f}\n")
+
+    pooled = [r["string_assignment"] for r in fold_results if "string_assignment" in r]
+    if pooled:
+        lines.append("\n[Wrong-string rate among pitch-correct notes, pooled over folds]\n")
+        for cat in ("overall", "open_string", "fretted", "fret_1_5", "fret_6_19",
+                    "single_position_pitch", "multi_position_pitch"):
+            events = sum(sa[cat]["events"] for sa in pooled)
+            errors = sum(sa[cat]["errors"] for sa in pooled)
+            if events:
+                lines.append(f"  {cat:<35} {errors / events:.4f}  ({errors}/{events})\n")
+        adjacent = sum(sa["adjacent_errors"] for sa in pooled)
+        total = adjacent + sum(sa["nonadjacent_errors"] for sa in pooled)
+        if total:
+            lines.append(f"  {'adjacent-string share of errors':<35} {adjacent / total:.4f}\n")
 
     lines.append("\n[Fold Details]\n")
     for r in fold_results:
@@ -337,15 +384,17 @@ def run_evaluation(
         model.eval()
 
         logger.info("Validation inference (threshold/duration search)...")
-        val_tab, _, _, val_targets = full_track_inference(val_paths, model, config, device)
-        best_thresh, best_dur = find_best_postproc(val_tab, val_targets, config)
+        val = full_track_inference(val_paths, model, config, device)
+        best_thresh, best_dur = find_best_postproc(val["tab"], val["tgt"], config)
         logger.info(f"  Best threshold: {best_thresh:.2f} | Best min_dur: {best_dur}")
+        del val
 
         logger.info("Test inference...")
-        test_tab, test_mp, test_mp_targets, test_targets = full_track_inference(test_paths, model, config, device)
-        results = evaluate_fold(test_tab, test_mp, test_mp_targets, test_targets, best_thresh, best_dur, config)
+        test = full_track_inference(test_paths, model, config, device)
+        results = evaluate_fold(test, best_thresh, best_dur, config)
         results["fold"] = fold_num
         results["test_group"] = test_group
+        results["val_group"] = val_group
         fold_results.append(results)
 
         logger.info(
