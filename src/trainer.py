@@ -568,7 +568,7 @@ class Trainer:
 
         label_map = {
             'gcs_tab_multipitch':      'Multi-Pitch',
-            'gcs_tab_hand_position':   'Hand Position',
+            'gcs_tab_hand_position':   'Fret Region',
             'gcs_tab_string_activity': 'String Activity',
             'gcs_tab_pitch_class':     'Pitch Class',
         }

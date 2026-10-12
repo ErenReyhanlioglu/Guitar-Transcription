@@ -8,7 +8,7 @@ Three chained stages, each writable to its own subdirectory of --output-dir:
                         guitar_transcription_continuous.GuitarSetPlus).
     2. all_features   - adds `hcqt`, `cqt`, `mel`, `stft`, `power` to each
                         .npz (via amt_tools's feature extractors).
-    3. enriched        - adds `hand_position`, `string_activity`, `pitch_class`
+    3. enriched        - adds `hand_position` (the paper's fret-region estimate), `string_activity`, `pitch_class`
                         auxiliary-task targets derived from `tablature`
                         (paper section III-A-2, eq. (1)). This is the final
                         directory: point --data-root at it for train.py.
@@ -144,11 +144,11 @@ def _extract_spectral_features(ground_truth_dir: str, all_features_dir: str, sam
 
 
 # ─────────────────────────────────────────────────────────────────────────
-# STAGE 3: + hand_position / string_activity / pitch_class (paper eq. 1)
+# STAGE 3: + fret region (stored as hand_position) / string_activity / pitch_class (paper eq. 1)
 # ─────────────────────────────────────────────────────────────────────────
 
 def generate_hand_position(tablature: np.ndarray) -> np.ndarray:
-    """(6, T) fret-per-string tablature -> (T,) coarse fret-region label.
+    """(6, T) fret-per-string tablature -> (T,) coarse fret-region label (the paper's fret-region estimate).
 
     0=no fretted note, 1: 0<mean_fret<=5, 2: <=10, 3: <=15, 4: >15.
     Matches the paper's eq. (1); open strings (fret 0) are excluded from the

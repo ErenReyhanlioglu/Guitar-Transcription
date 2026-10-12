@@ -75,6 +75,9 @@ model:
       dropout: 0.25
 
     # --- HEADS ---
+    # hand_position is the paper's fret-region estimate: the mean fret of the active
+    # fretted notes, quantized into 5 classes (eq. 1). The key keeps its original name
+    # so existing feature files and checkpoints stay compatible.
     heads:
       tablature: {enabled: true}
 

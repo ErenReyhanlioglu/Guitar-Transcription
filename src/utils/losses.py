@@ -74,7 +74,7 @@ class MultiTaskUncertaintyLoss(nn.Module):
         return total_loss
 
 class CombinedLoss(nn.Module):
-    """Aggregates the tablature (focal), hand-position (CE), and BCE-based auxiliary task losses
+    """Aggregates the tablature (focal), fret-region (CE), and BCE-based auxiliary task losses
     into a single training loss, using either static config weights or learned uncertainty weighting."""
     def __init__(self, config, class_weights=None):
         """Builds the per-task loss functions and determines which auxiliary tasks are active from config.
@@ -106,7 +106,7 @@ class CombinedLoss(nn.Module):
         )
 
         self.bce = nn.BCEWithLogitsLoss()
-        self.ce = nn.CrossEntropyLoss() # For Hand Position
+        self.ce = nn.CrossEntropyLoss() # For the fret region (hand_position)
 
         self.active_tasks = ['tablature'] 
         
@@ -172,7 +172,7 @@ class CombinedLoss(nn.Module):
                 
                 losses['tablature'] = self.tab_loss_fn(flat_logits, flat_targets)
 
-            # --- 2. Hand Position Loss ---
+            # --- 2. Fret-region loss (hand_position) ---
             if 'hand_pos_logits' in outputs:
                 # Logits: (N, Classes), Target: (N,)
                 # The data loader should already provide this as (B*T, C) and (B*T)

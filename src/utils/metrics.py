@@ -597,7 +597,7 @@ from sklearn.metrics import precision_score, recall_score, f1_score, accuracy_sc
 
 def compute_hand_position_metrics(preds, targets, include_silence=True, silence_class=0):
     """
-    Hand Position Metrics.
+    Fret-region (hand_position) metrics.
     - silence_class: the code for silence/open string in the dataset (usually 0).
     - include_silence=False: only evaluates moments where the hand has taken a position (target != 0).
     """

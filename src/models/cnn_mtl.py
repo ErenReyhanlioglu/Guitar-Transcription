@@ -93,7 +93,7 @@ class cnn_mtl(BaseTabModel):
 
     Encodes each active input representation (e.g. HCQT, Mel) through its own
     convolutional branch, concatenates them into a shared bottleneck, runs the
-    enabled auxiliary heads (multipitch, hand position, string activity, pitch
+    enabled auxiliary heads (multipitch, fret region, string activity, pitch
     class, onset) on the bottleneck, and feeds their soft (sigmoid/softmax)
     outputs alongside the bottleneck into the tablature head.
     """
@@ -181,7 +181,7 @@ class cnn_mtl(BaseTabModel):
             )
             self.aux_input_dim += num_pitches # Sigmoid Outputs
 
-        # Hand Position
+        # Fret region (stored as 'hand_position')
         if heads_conf.get('hand_position', {}).get('enabled', False):
             hp_classes = heads_conf['hand_position']['num_classes']
             self.heads['hand_position'] = nn.Sequential(

@@ -297,7 +297,7 @@ def plot_pianoroll_errors(pred_pianoroll, target_pianoroll, hop_seconds, save_pa
 
 def plot_binary_activation(activation_matrix, hop_seconds, save_path=None, title="Binary Activation"):
     """
-    Plots binary activation heatmaps (e.g., String Activity, Pitch Class, Hand Pos).
+    Plots binary activation heatmaps (e.g., String Activity, Pitch Class, Fret Region).
     Auto-detects labels based on channel count.
     Ensures (Channels, Time) orientation.
     """
