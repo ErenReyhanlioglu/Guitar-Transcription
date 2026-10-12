@@ -4,7 +4,7 @@ import os
 import json
 import logging
 from typing import Any
-from torch.cuda.amp import autocast, GradScaler
+from torch.amp import autocast, GradScaler
 from tqdm import tqdm
 from sklearn.metrics import precision_recall_fscore_support
 
@@ -111,7 +111,7 @@ class Trainer:
                 self.optimizer.add_param_group(param_group)
 
         self.use_amp      = self.training_config.get('use_mixed_precision', False)
-        self.scaler       = GradScaler(enabled=self.use_amp)
+        self.scaler       = GradScaler('cuda', enabled=self.use_amp)
         self.early_stopper = self._setup_early_stopping()
 
         logger.info("Trainer initialized.")
@@ -253,7 +253,7 @@ class Trainer:
 
             try:
                 with torch.enable_grad():
-                    with autocast(enabled=self.use_amp):
+                    with autocast('cuda', enabled=self.use_amp):
                         model_output = self.model(inputs)
 
                 # Did the hook populate the bottleneck?
@@ -262,7 +262,7 @@ class Trainer:
 
                 self.bottleneck.retain_grad()
 
-                with autocast(enabled=self.use_amp):
+                with autocast('cuda', enabled=self.use_amp):
                     loss_dict = self.loss_fn(model_output, batch)
 
                 # Find the tablature loss key
@@ -370,7 +370,7 @@ class Trainer:
                 self.optimizer.zero_grad(set_to_none=True)
                 self.bottleneck = None
 
-                with autocast(enabled=self.use_amp):
+                with autocast('cuda', enabled=self.use_amp):
                     model_output    = self.model(inputs)
                     loss_dict       = self.loss_fn(model_output, batch)
                     loss_to_backprop = loss_dict['total_loss']
