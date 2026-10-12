@@ -203,9 +203,12 @@ class CombinedLoss(nn.Module):
                 total_loss = losses.get('tablature', 0.0)
                 for key in losses:
                     if key == 'tablature': continue
-                    weight_key = f"{key}_loss" 
+                    weight_key = f"{key}_loss"
                     w = self.loss_config.get(weight_key, {}).get('weight', 1.0)
-                    total_loss += w * losses[key]
+                    # Out-of-place on purpose: `total_loss += ...` would modify
+                    # losses['tablature'] in place, so the reported tablature loss
+                    # (and the GCS tablature gradient) would silently become the total.
+                    total_loss = total_loss + w * losses[key]
 
             loss_dict_out = {'total_loss': total_loss}
             for k, v in losses.items():

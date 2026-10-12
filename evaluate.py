@@ -28,7 +28,7 @@ import torch.nn.functional as F
 import yaml
 from typing import cast
 
-from src.data_loader import prepare_dataset_files
+from src.data_loader import fold_split, prepare_dataset_files
 from src.models import get_model
 from src.trainer import convert_history_to_native_types
 from src.utils.config_helpers import process_config, resolve_device
@@ -313,7 +313,6 @@ def run_evaluation(
 
     all_npz_paths, groups = prepare_dataset_files(config)
     unique_groups = sorted(set(groups))
-    n_splits = len(unique_groups)
     group_to_paths = {g: [] for g in unique_groups}
     for path, group in zip(all_npz_paths, groups):
         group_to_paths[group].append(path)
@@ -328,10 +327,7 @@ def run_evaluation(
     fold_results = []
     for fold_num in fold_numbers:
         fold_index = fold_num - 1
-        test_group = unique_groups[fold_index]
-        val_group = unique_groups[(fold_index + 1) % n_splits]
-        test_paths = group_to_paths[test_group]
-        val_paths = group_to_paths[val_group]
+        _, val_paths, test_paths, test_group, val_group = fold_split(unique_groups, group_to_paths, fold_index)
 
         logger.info(f"Fold {fold_num} | Test: {test_group} | Val: {val_group}")
 

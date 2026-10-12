@@ -15,7 +15,7 @@ class TablatureDataset(Dataset):
     A PyTorch Dataset for CNN_MTL (Context Window) model.
     """
     def __init__(self, npz_paths: list[str], config: dict, augment: bool = False,
-                 zero_shot_map: dict | None = None, deterministic_crop: bool = False):
+                 zero_shot_map: dict | None = None):
         """Configures feature/target keys, silence class, chunk size, and augmentation from `config`.
 
         Args:
@@ -24,8 +24,6 @@ class TablatureDataset(Dataset):
             augment: Whether to apply frequency/time masking augmentation in `__getitem__`.
             zero_shot_map: Optional per-string set of frets to mask out to the silence class,
                 used for zero-shot fret evaluation.
-            deterministic_crop: If True, always take the centered chunk instead of a random
-                one, so validation/test metrics are stable across epochs/runs.
         """
         self.npz_paths = npz_paths
         self.config = config
@@ -34,12 +32,6 @@ class TablatureDataset(Dataset):
         self.loss_config = config['loss']
 
         self.zero_shot_map = zero_shot_map
-        # Training draws a fresh random temporal crop per item per epoch (standard
-        # crop augmentation over many epochs). Validation/test loaders instead pass
-        # deterministic_crop=True so the same window is used every epoch, so metrics
-        # used for checkpoint selection / early stopping aren't epoch-to-epoch noisy
-        # from re-randomized crops.
-        self.deterministic_crop = deterministic_crop
         self.silence_class = self.instrument_config.get('silence_class', self.instrument_config.get('num_frets', 19) + 1)
         
         # --- Active features list conversion ---
@@ -91,18 +83,19 @@ class TablatureDataset(Dataset):
         """Loads one file's features/targets and returns a fixed-length training chunk.
 
         Reads the active feature arrays and any configured target arrays from the
-        .npz file at `idx`, crops or pads them to `chunk_size` frames (a centered
-        crop if `deterministic_crop`, otherwise a random one), derives the
+        .npz file at `idx`, randomly crops or pads them to `chunk_size` frames
+        (every split, including validation, as in the paper's runs), derives the
         multi-pitch target from the tablature slice if enabled, applies
-        augmentation, and applies zero-shot fret masking if configured. On any
-        error, logs it and retries with a different random sample instead of
-        raising.
+        augmentation, and applies zero-shot fret masking if configured.
+
+        Raises:
+            RuntimeError: If the file cannot be read or is missing a feature.
+                Substituting a different random file instead would silently
+                change the split, so loading fails loudly.
         """
         path = self.samples_metadata[idx]['file_path']
-        if path is None:
-            return self.__getitem__(random.randint(0, len(self) - 1))
 
-        try:            
+        try:
             data = np.load(path, allow_pickle=True)
             features_dict = {}
             targets_dict = {}
@@ -164,10 +157,7 @@ class TablatureDataset(Dataset):
                     pad_val = self.silence_class if key == 'tablature' else 0
                     targets_dict[key] = F.pad(targets_dict[key], (0, pad_amount), 'constant', pad_val)
             else:
-                if self.deterministic_crop:
-                    start_idx = (full_length - target_length) // 2
-                else:
-                    start_idx = random.randint(0, full_length - target_length)
+                start_idx = random.randint(0, full_length - target_length)
                 end_idx = start_idx + target_length
                 for key in features_dict:
                     features_dict[key] = features_dict[key][..., start_idx:end_idx]
@@ -213,10 +203,7 @@ class TablatureDataset(Dataset):
             return sample
 
         except Exception as e:
-            # On error, log it and retry with a different file.
-            # Seeing this log matters so failures don't silently pile up toward the recursion limit.
-            logger.error(f"Error processing file '{path}': {e}. Skipping.")
-            return self.__getitem__(random.randint(0, len(self) - 1))
+            raise RuntimeError(f"Error processing file '{path}': {e}") from e
 
 def collate_fn(batch: list[dict], config: dict) -> dict:
     """Batches dataset samples and unfolds each frame into a context window.
@@ -291,28 +278,46 @@ def prepare_dataset_files(config: dict) -> tuple[np.ndarray, list[str]]:
     logger.info(f"Total files: {len(all_npz_paths)}, Unique groups: {len(np.unique(groups))}")
     return all_npz_paths, groups
 
+def fold_split(unique_groups: list[str], group_to_paths: dict, fold_index: int):
+    """Leave-one-player-out split for one fold.
+
+    Fold `fold_index` holds out player `fold_index` for testing and uses player
+    `(fold_index + 1) % n` for validation; all other players are used for training.
+
+    Returns:
+        (train_paths, val_paths, test_paths, test_group, val_group)
+    """
+    n_splits = len(unique_groups)
+    test_group = unique_groups[fold_index]
+    val_group = unique_groups[(fold_index + 1) % n_splits]
+    train_groups = [g for g in unique_groups if g not in (test_group, val_group)]
+    train_paths = [p for g in train_groups for p in group_to_paths[g]]
+    return train_paths, list(group_to_paths[val_group]), list(group_to_paths[test_group]), test_group, val_group
+
 def get_dataloaders(config: dict, train_paths: list[str], val_paths: list[str], test_paths: list[str], zero_shot_map: dict | None = None) -> tuple[DataLoader, DataLoader, DataLoader]:
     """Builds the train/validation/test DataLoaders for one cross-validation fold.
 
-    Training data is randomly cropped and optionally augmented per
-    `data.augmentation.enabled`; validation and test data use a deterministic
-    centered crop instead. The validation dataset accepts an optional
-    `zero_shot_map` for masking specific frets. All three loaders share
-    `collate_fn` for context-window unfolding.
+    Every split draws a random `framify_chunk_size` crop per item, so the
+    validation metrics that drive checkpoint selection and early stopping come
+    from randomly cropped segments, as in the paper's runs. Only training data
+    is shuffled and (per `data.augmentation.enabled`) augmented. The validation
+    dataset accepts an optional `zero_shot_map` for masking specific frets. All
+    three loaders share `collate_fn` for context-window unfolding. Reported test
+    metrics come from evaluate.py's full-track inference, not from these loaders.
     """
     logger.info("Initializing DataLoaders...")
     data_conf = config['data']
     is_augment = data_conf.get('augmentation', {}).get('enabled', False)
-    
+
     train_dataset = TablatureDataset(train_paths, config, augment=is_augment, zero_shot_map=None)
-    val_dataset = TablatureDataset(val_paths, config, augment=False, zero_shot_map=zero_shot_map, deterministic_crop=True)
+    val_dataset = TablatureDataset(val_paths, config, augment=False, zero_shot_map=zero_shot_map)
 
     collate_with_config = partial(collate_fn, config=config)
 
     train_loader = DataLoader(train_dataset, batch_size=data_conf['batch_size'], shuffle=True, num_workers=data_conf.get('num_workers', 0), pin_memory=True, drop_last=True, collate_fn=collate_with_config)
-    val_loader = DataLoader(val_dataset, batch_size=data_conf['batch_size'], shuffle=False, num_workers=data_conf.get('num_workers', 0), pin_memory=True, drop_last=False, collate_fn=collate_with_config)
+    val_loader = DataLoader(val_dataset, batch_size=data_conf['batch_size'], shuffle=False, num_workers=data_conf.get('num_workers', 0), pin_memory=True, drop_last=True, collate_fn=collate_with_config)
 
-    test_dataset = TablatureDataset(test_paths, config, augment=False, deterministic_crop=True)
+    test_dataset = TablatureDataset(test_paths, config, augment=False)
     test_loader = DataLoader(test_dataset, batch_size=data_conf['batch_size'], shuffle=False, num_workers=data_conf.get('num_workers', 0), pin_memory=True, drop_last=False, collate_fn=collate_with_config)
     
     return train_loader, val_loader, test_loader

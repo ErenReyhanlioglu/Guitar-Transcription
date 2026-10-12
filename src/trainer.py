@@ -214,10 +214,12 @@ class Trainer:
     # GCS — END OF EPOCH, MULTI-BATCH AVERAGE
     # ─────────────────────────────────────────────────────────────────────────
 
-    def _compute_gcs_averaged(self, num_batches: int = 30) -> dict:
+    def _compute_gcs_averaged(self, num_batches: int = 15) -> dict:
         """
-        After the epoch ends, samples `num_batches` batches from the training
-        data loader, computes GCS for each, and averages the results.
+        After the epoch ends, takes the first `num_batches` batches of the
+        (shuffled, randomly cropped) training loader with the model in eval
+        mode, computes GCS for each, and averages the results. The paper uses
+        15 batches (`loss.grad_cos_sim.num_batches`), about 30,000 frames.
 
         Why this approach:
           - Relies on an average over multiple samples, not just the last batch.

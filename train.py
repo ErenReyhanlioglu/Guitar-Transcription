@@ -25,12 +25,13 @@ import yaml
 from torch.utils.tensorboard import SummaryWriter
 
 from evaluate import run_evaluation
-from src.data_loader import get_dataloaders, prepare_dataset_files
+from src.data_loader import fold_split, get_dataloaders, prepare_dataset_files
 from src.models import get_model
 from src.trainer import Trainer
 from src.utils.config_helpers import get_optimizer, get_scheduler, process_config, resolve_device
 from src.utils.experiment import create_experiment_directory
 from src.utils.logger import setup_logger
+from src.utils.preflight import audit_dataset, verify_loss_objective
 
 logger = logging.getLogger(__name__)
 
@@ -102,13 +103,8 @@ def run_fold(fold_index: int, n_splits: int, unique_groups: list[str], group_to_
     for training. Frees the model/loaders and clears the CUDA cache afterward.
     """
     fold_num = fold_index + 1
-    test_group = unique_groups[fold_index]
-    val_group = unique_groups[(fold_index + 1) % n_splits]
+    train_paths, val_paths, test_paths, test_group, val_group = fold_split(unique_groups, group_to_paths, fold_index)
     train_groups = [g for g in unique_groups if g not in (test_group, val_group)]
-
-    train_paths = [p for g in train_groups for p in group_to_paths[g]]
-    val_paths = group_to_paths[val_group]
-    test_paths = group_to_paths[test_group]
 
     logger.info(f"##### FOLD {fold_num}/{n_splits} STARTING #####")
     logger.info(f"Train groups: {train_groups} ({len(train_paths)} files)")
@@ -117,6 +113,12 @@ def run_fold(fold_index: int, n_splits: int, unique_groups: list[str], group_to_
 
     fold_path = os.path.join(experiment_path_main, f"fold_{fold_num}")
     os.makedirs(fold_path, exist_ok=True)
+
+    # The six input/decoding runs (Table 1) seeded once at start-up; the component
+    # campaign (Table 3) reseeded at the start of every fold, so any fold can be
+    # rerun on its own. Its configs set training.reseed_each_fold: true.
+    if config["training"].get("reseed_each_fold", False):
+        set_seed(config["data"]["random_state"])
 
     train_loader, val_loader, test_loader = get_dataloaders(config, train_paths, val_paths, test_paths)
 
@@ -188,6 +190,11 @@ def main():
 
     device = resolve_device(config)
     logger.info(f"Using device: {device}")
+
+    # Stop before any training if the split, the feature files, or the objective are wrong.
+    audit_dataset(unique_groups, group_to_paths, config, output_dir=experiment_path_main)
+    verify_loss_objective(get_model, config, *fold_split(unique_groups, group_to_paths, 0)[:3], device=device)
+    set_seed(config["data"]["random_state"])
 
     fold_indices = [int(i) for i in args.folds.split(",")] if args.folds else list(range(n_splits))
 
