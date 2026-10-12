@@ -1,10 +1,11 @@
 Guitar-Transcription/
 ├── assets/                      Architecture diagrams and result figures used in README.md
 ├── configs/
-│   └── cnn_mtl_config.yaml      configuration
+│   ├── cnn_mtl_config.yaml      The proposed configuration
+│   └── ablations/               One config per other reported run
 ├── src/
 │   ├── __init__.py
-│   ├── data_loader.py           GuitarSet .npz dataset and dataloader construction
+│   ├── data_loader.py           GuitarSet .npz dataset, dataloaders, fold split
 │   ├── trainer.py               Training loop, checkpointing, GCS diagnostic
 │   ├── models/
 │   │   ├── __init__.py          Model factory (get_model)
@@ -20,11 +21,15 @@ Guitar-Transcription/
 │       ├── guitar_profile.py    Instrument tuning/fret-range profile
 │       ├── logger.py            Logging setup (UTF-8 console output)
 │       ├── losses.py            Focal loss, uncertainty-weighted multi-task loss
-│       ├── metrics.py           Tablature/TDR/multi-pitch/error-rate metric computation
-│       └── plotting.py          Loss curves, spectrograms, tablature/pianoroll visualizations
+│       ├── metrics.py           Tablature/TDR/multi-pitch/error-rate/wrong-string metrics
+│       ├── plotting.py          Loss curves, spectrograms, tablature/pianoroll visualizations
+│       └── preflight.py         Dataset, split and objective checks run before training
 ├── extract_features.py          Raw GuitarSet audio -> feature-enriched .npz files
 ├── train.py                     Six-fold cross-validation training entry point
 ├── evaluate.py                  Leak-free evaluation pipeline (produces the paper's reported numbers)
+├── summarize_results.py         Result tables, paired tests, GCS and loss-weight statistics
+├── make_figures.py              Result figures (GCS, string confusion, component ablation, overlays)
+├── benchmark_cost.py            Parameters, MACs and real-time factor
 ├── pyproject.toml               Dependencies, managed with uv
 ├── uv.lock                      Locked dependency versions
 ├── terminal_cheatsheet.md       Full CLI reference for every script in this repo

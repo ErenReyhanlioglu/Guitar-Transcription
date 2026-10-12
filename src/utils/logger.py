@@ -126,7 +126,7 @@ def log_epoch_summary(logger, epoch, total_epochs, lr, train_metrics, val_metric
 
     # --- 4. AUX TASKS & EXTRAS ---
     task_groups = [
-        ("HAND POSITION", "hand_pos_", ["acc", "f1", "precision", "recall"]),
+        ("FRET REGION", "hand_pos_", ["acc", "f1", "precision", "recall"]),
         ("STRING ACTIVITY", "string_act_", ["f1", "precision", "recall"]),
         ("PITCH CLASS", "pitch_class_", ["f1", "precision", "recall"]),
         ("MULTIPITCH (Head)", "mp_head_", ["f1", "precision", "recall"]),

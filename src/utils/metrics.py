@@ -597,7 +597,7 @@ from sklearn.metrics import precision_score, recall_score, f1_score, accuracy_sc
 
 def compute_hand_position_metrics(preds, targets, include_silence=True, silence_class=0):
     """
-    Hand Position Metrics.
+    Fret-region (hand_position) metrics.
     - silence_class: the code for silence/open string in the dataset (usually 0).
     - include_silence=False: only evaluates moments where the hand has taken a position (target != 0).
     """
@@ -693,3 +693,90 @@ def compute_aux_multipitch_metrics(preds_logits, targets, include_silence=True, 
         'mp_head_recall': res['string_act_recall'],
         'mp_head_f1': res['string_act_f1']
     }
+
+def string_assignment_breakdown(preds, targets, tuning, num_frets, silence_class):
+    """Splits the pitch-correct note events behind TDR into correct and wrong-string assignments.
+
+    Groups them by open vs. fretted string, fret region (1-5 vs. 6 and up), and
+    whether the pitch has one or several playable positions; also counts how many
+    wrong-string errors land on an adjacent string and which string pairs get
+    confused. The overall error rate equals 1 - TDR.
+
+    When a pitch sounds on several strings in the same frame, unmatched reference
+    and estimated strings are paired in ascending string order.
+
+    Args:
+        preds, targets: (frames, strings) fret labels, silence as `silence_class`.
+        tuning: Open-string MIDI pitches, low string first.
+        num_frets: Highest fret label.
+        silence_class: Label used for silence.
+
+    Returns:
+        A dict with {'events', 'errors', 'error_rate'} per category, the adjacent /
+        non-adjacent error counts and share, and 'string_pairs' mapping
+        "reference->estimated" (0-indexed from the low E) to an error count.
+    """
+    tuning = list(tuning)
+    P = np.asarray(preds.cpu().numpy() if hasattr(preds, "cpu") else preds)
+    R = np.asarray(targets.cpu().numpy() if hasattr(targets, "cpu") else targets)
+
+    positions = {}
+
+    def n_positions(pitch):
+        if pitch not in positions:
+            positions[pitch] = sum(1 for t in tuning if 0 <= pitch - t <= num_frets)
+        return positions[pitch]
+
+    categories = ["overall", "open_string", "fretted", "fret_1_5", "fret_6_19",
+                  "single_position_pitch", "multi_position_pitch"]
+    events = dict.fromkeys(categories, 0)
+    errors = dict.fromkeys(categories, 0)
+    adjacent = non_adjacent = 0
+    pairs = {}
+
+    def record(ref_string, pitch, is_error):
+        fret = pitch - tuning[ref_string]
+        keys = ["overall", "open_string" if fret == 0 else "fretted"]
+        if 1 <= fret <= 5:
+            keys.append("fret_1_5")
+        elif fret >= 6:
+            keys.append("fret_6_19")
+        keys.append("single_position_pitch" if n_positions(pitch) == 1 else "multi_position_pitch")
+        for k in keys:
+            events[k] += 1
+            errors[k] += int(is_error)
+
+    sounding_ref = (R != silence_class) & (R >= 0)
+    sounding_est = (P != silence_class) & (P >= 0)
+    for i in np.where(sounding_ref.any(1) & sounding_est.any(1))[0]:
+        ref, est = {}, {}
+        for s in range(R.shape[1]):
+            if sounding_ref[i, s]:
+                ref.setdefault(tuning[s] + int(R[i, s]), []).append(s)
+            if sounding_est[i, s]:
+                est.setdefault(tuning[s] + int(P[i, s]), []).append(s)
+        for pitch in ref.keys() & est.keys():
+            ref_strings, est_strings = set(ref[pitch]), set(est[pitch])
+            correct = ref_strings & est_strings
+            n_wrong = min(len(ref_strings), len(est_strings)) - len(correct)
+            for s in correct:
+                record(s, pitch, False)
+            ref_left, est_left = sorted(ref_strings - correct), sorted(est_strings - correct)
+            for j in range(n_wrong):
+                record(ref_left[j], pitch, True)
+                key = f"{ref_left[j]}->{est_left[j]}"
+                pairs[key] = pairs.get(key, 0) + 1
+                if abs(ref_left[j] - est_left[j]) == 1:
+                    adjacent += 1
+                else:
+                    non_adjacent += 1
+
+    result: dict[str, Any] = {c: {"events": events[c], "errors": errors[c],
+                                  "error_rate": errors[c] / events[c] if events[c] else float("nan")}
+                              for c in categories}
+    total = adjacent + non_adjacent
+    result["adjacent_errors"] = adjacent
+    result["nonadjacent_errors"] = non_adjacent
+    result["adjacent_string_share_of_errors"] = adjacent / total if total else float("nan")
+    result["string_pairs"] = pairs
+    return result

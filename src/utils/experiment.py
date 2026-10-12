@@ -155,11 +155,11 @@ def _plot_history_curves(history: dict, paths: dict):
         {'key': 'tab_recall',    'title': 'Tablature Recall',       'dir': paths['tablature'], 'file': 'recall.png'},
         {'key': 'tdr',           'title': 'Tablature Disambiguation Rate (TDR)', 'dir': paths['tdr'], 'file': 'tdr_curve.png'},
 
-        # --- 2. Hand Position (updated) ---
-        {'key': 'hand_pos_acc',       'title': 'Hand Position Accuracy',  'dir': paths['hand_position'], 'file': 'accuracy.png'},
-        {'key': 'hand_pos_f1',        'title': 'Hand Position F1',        'dir': paths['hand_position'], 'file': 'f1_score.png'},
-        {'key': 'hand_pos_precision', 'title': 'Hand Position Precision', 'dir': paths['hand_position'], 'file': 'precision.png'},
-        {'key': 'hand_pos_recall',    'title': 'Hand Position Recall',    'dir': paths['hand_position'], 'file': 'recall.png'},
+        # --- 2. Fret region (hand_position) ---
+        {'key': 'hand_pos_acc',       'title': 'Fret Region Accuracy',   'dir': paths['hand_position'], 'file': 'accuracy.png'},
+        {'key': 'hand_pos_f1',        'title': 'Fret Region F1',         'dir': paths['hand_position'], 'file': 'f1_score.png'},
+        {'key': 'hand_pos_precision', 'title': 'Fret Region Precision',  'dir': paths['hand_position'], 'file': 'precision.png'},
+        {'key': 'hand_pos_recall',    'title': 'Fret Region Recall',     'dir': paths['hand_position'], 'file': 'recall.png'},
         
         # --- 3. String Activity (updated) ---
         {'key': 'string_act_f1',        'title': 'String Activity F1',        'dir': paths['string_activity'], 'file': 'f1_score.png'},
@@ -211,7 +211,7 @@ def _plot_history_curves(history: dict, paths: dict):
 def _get_sample_data_and_predictions(model, val_loader, config, device, profile, include_silence, silence_class):
     """Runs the model on one validation batch and collects ground-truth/prediction arrays for the report.
 
-    Returns tablature, string-activity, pitch-class, and hand-position ground
+    Returns tablature, string-activity, pitch-class, and fret-region ground
     truth and predictions (as numpy arrays truncated to one chunk), plus the
     pianoroll representation derived from the tablature via `agt_tools`.
     Returns None if `val_loader` is empty.
@@ -288,7 +288,7 @@ def _get_sample_data_and_predictions(model, val_loader, config, device, profile,
 
 def _plot_sample_visualizations(sample_data: dict | None, paths: dict, config: dict):
     """Renders all sample-batch visualizations (tablature, pianoroll, tablature error map,
-    string activity, pitch class, hand position) from `sample_data` into paths['samples'].
+    string activity, pitch class, fret region) from `sample_data` into paths['samples'].
     No-op if `sample_data` is None."""
     if not sample_data: return
     logger.info("Plotting sample visualizations...")
@@ -330,7 +330,7 @@ def _plot_sample_visualizations(sample_data: dict | None, paths: dict, config: d
     if sample_data.get('pred_pc_np') is not None:
         plot_binary_activation(sample_data['pred_pc_np'], hop_seconds, os.path.join(sample_path, "sample_chroma_pred.png"), "Pred Pitch Class")
 
-    # Hand position (plotted as a heatmap)
+    # Fret region (plotted as a heatmap)
     num_hp_classes = 5
     def hp_to_matrix(hp_arr):
         if hp_arr is None: return None
@@ -346,8 +346,8 @@ def _plot_sample_visualizations(sample_data: dict | None, paths: dict, config: d
     pred_hp_mat = hp_to_matrix(sample_data.get('pred_hp_np'))
     
     if gt_hp_mat is not None:
-        plot_binary_activation(gt_hp_mat, hop_seconds, os.path.join(sample_path, "sample_hand_pos_truth.png"), "GT Hand Position (Regions)")
+        plot_binary_activation(gt_hp_mat, hop_seconds, os.path.join(sample_path, "sample_hand_pos_truth.png"), "GT Fret Region")
     if pred_hp_mat is not None:
-        plot_binary_activation(pred_hp_mat, hop_seconds, os.path.join(sample_path, "sample_hand_pos_pred.png"), "Pred Hand Position (Regions)")
+        plot_binary_activation(pred_hp_mat, hop_seconds, os.path.join(sample_path, "sample_hand_pos_pred.png"), "Pred Fret Region")
 
     logger.info(f"Sample visualizations saved to: {sample_path}")

@@ -93,7 +93,7 @@ class cnn_mtl(BaseTabModel):
 
     Encodes each active input representation (e.g. HCQT, Mel) through its own
     convolutional branch, concatenates them into a shared bottleneck, runs the
-    enabled auxiliary heads (multipitch, hand position, string activity, pitch
+    enabled auxiliary heads (multipitch, fret region, string activity, pitch
     class, onset) on the bottleneck, and feeds their soft (sigmoid/softmax)
     outputs alongside the bottleneck into the tablature head.
     """
@@ -181,7 +181,7 @@ class cnn_mtl(BaseTabModel):
             )
             self.aux_input_dim += num_pitches # Sigmoid Outputs
 
-        # Hand Position
+        # Fret region (stored as 'hand_position')
         if heads_conf.get('hand_position', {}).get('enabled', False):
             hp_classes = heads_conf['hand_position']['num_classes']
             self.heads['hand_position'] = nn.Sequential(
@@ -224,27 +224,34 @@ class cnn_mtl(BaseTabModel):
             self.aux_input_dim += self.num_strings # Sigmoid Outputs
 
         # --- Tablature Head (Main) ---
-        # Input size: bottleneck + outputs of all active aux heads
-        total_tab_input_dim = self.bottleneck_dim + self.aux_input_dim
+        # Input size: bottleneck + outputs of all active aux heads (soft fusion).
+        # use_cascade_fusion=False keeps the aux heads and their losses but feeds the
+        # tablature head the bottleneck alone (component ablation "auxiliary loss, no
+        # fusion"); tab_head_hidden_size widens the head for the parameter-matched
+        # single-task baseline (771 units). The defaults reproduce the proposed model.
+        self.use_cascade_fusion = bool(model_params.get('use_cascade_fusion', True))
+        self.tab_hidden_dim = int(model_params.get('tab_head_hidden_size', 256))
+        total_tab_input_dim = self.bottleneck_dim + (self.aux_input_dim if self.use_cascade_fusion else 0)
 
         tab_out = self.num_strings * self.num_classes_per_string
         self.heads['tablature'] = nn.Sequential(
-            nn.Linear(total_tab_input_dim, 256), # <-- Expanded input
+            nn.Linear(total_tab_input_dim, self.tab_hidden_dim), # <-- Expanded input
             nn.ReLU(),
             nn.Dropout(0.5),
-            nn.Linear(256, tab_out)
+            nn.Linear(self.tab_hidden_dim, tab_out)
         )
-        
-        logger.info(f"Cascaded Input Size: {self.bottleneck_dim} (Bottleneck) + {self.aux_input_dim} (Aux) = {total_tab_input_dim}")
+
+        logger.info(f"Cascaded Input Size: {self.bottleneck_dim} (Bottleneck) + {self.aux_input_dim} (Aux) = {total_tab_input_dim}"
+                    f" | fusion={self.use_cascade_fusion}, tab hidden={self.tab_hidden_dim}")
 
     def forward(self, inputs):
         """Runs the full forward pass: per-feature backbone -> bottleneck -> auxiliary heads -> tablature head.
 
         Each active feature is encoded and (optionally) projected, then
         concatenated into the bottleneck. Enabled auxiliary heads run on the
-        bottleneck; their logits are stored in `outputs`, and their
-        sigmoid/softmax probabilities are concatenated with the bottleneck to
-        form the tablature head's input.
+        bottleneck; their logits are stored in `outputs`, and (unless
+        `use_cascade_fusion` is off) their sigmoid/softmax probabilities are
+        concatenated with the bottleneck to form the tablature head's input.
 
         Returns:
             A dict with 'tab_logits' and, for each enabled auxiliary head, its '{name}_logits'.
@@ -293,7 +300,7 @@ class cnn_mtl(BaseTabModel):
             aux_features_list.append(torch.sigmoid(on_logits))
 
         # 3. Concatenation (Soft-Fusion)
-        if aux_features_list:
+        if aux_features_list and self.use_cascade_fusion:
             # [Batch, Aux_Total_Dim]
             aux_concat = torch.cat(aux_features_list, dim=1)
             # [Batch, Bottleneck + Aux_Total_Dim]

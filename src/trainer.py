@@ -4,7 +4,7 @@ import os
 import json
 import logging
 from typing import Any
-from torch.cuda.amp import autocast, GradScaler
+from torch.amp import autocast, GradScaler
 from tqdm import tqdm
 from sklearn.metrics import precision_recall_fscore_support
 
@@ -111,7 +111,7 @@ class Trainer:
                 self.optimizer.add_param_group(param_group)
 
         self.use_amp      = self.training_config.get('use_mixed_precision', False)
-        self.scaler       = GradScaler(enabled=self.use_amp)
+        self.scaler       = GradScaler('cuda', enabled=self.use_amp)
         self.early_stopper = self._setup_early_stopping()
 
         logger.info("Trainer initialized.")
@@ -214,10 +214,12 @@ class Trainer:
     # GCS — END OF EPOCH, MULTI-BATCH AVERAGE
     # ─────────────────────────────────────────────────────────────────────────
 
-    def _compute_gcs_averaged(self, num_batches: int = 30) -> dict:
+    def _compute_gcs_averaged(self, num_batches: int = 15) -> dict:
         """
-        After the epoch ends, samples `num_batches` batches from the training
-        data loader, computes GCS for each, and averages the results.
+        After the epoch ends, takes the first `num_batches` batches of the
+        (shuffled, randomly cropped) training loader with the model in eval
+        mode, computes GCS for each, and averages the results. The paper uses
+        15 batches (`loss.grad_cos_sim.num_batches`), about 30,000 frames.
 
         Why this approach:
           - Relies on an average over multiple samples, not just the last batch.
@@ -251,7 +253,7 @@ class Trainer:
 
             try:
                 with torch.enable_grad():
-                    with autocast(enabled=self.use_amp):
+                    with autocast('cuda', enabled=self.use_amp):
                         model_output = self.model(inputs)
 
                 # Did the hook populate the bottleneck?
@@ -260,7 +262,7 @@ class Trainer:
 
                 self.bottleneck.retain_grad()
 
-                with autocast(enabled=self.use_amp):
+                with autocast('cuda', enabled=self.use_amp):
                     loss_dict = self.loss_fn(model_output, batch)
 
                 # Find the tablature loss key
@@ -368,7 +370,7 @@ class Trainer:
                 self.optimizer.zero_grad(set_to_none=True)
                 self.bottleneck = None
 
-                with autocast(enabled=self.use_amp):
+                with autocast('cuda', enabled=self.use_amp):
                     model_output    = self.model(inputs)
                     loss_dict       = self.loss_fn(model_output, batch)
                     loss_to_backprop = loss_dict['total_loss']
@@ -566,7 +568,7 @@ class Trainer:
 
         label_map = {
             'gcs_tab_multipitch':      'Multi-Pitch',
-            'gcs_tab_hand_position':   'Hand Position',
+            'gcs_tab_hand_position':   'Fret Region',
             'gcs_tab_string_activity': 'String Activity',
             'gcs_tab_pitch_class':     'Pitch Class',
         }

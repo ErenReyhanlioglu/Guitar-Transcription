@@ -121,7 +121,7 @@ def analyze(experiment_path: str, main_exp_path: str | None = None, val_loader: 
                 all_preds['tablature'].append(preds.cpu())
                 all_targets['tablature'].append(targets.cpu())
 
-            # --- Hand Position ---
+            # --- Fret region (hand_position) ---
             if 'hand_pos_logits' in outputs and 'hand_pos_target' in batch:
                 preds = torch.argmax(outputs['hand_pos_logits'], dim=-1)
                 all_preds['hand_pos'].append(preds.cpu())
@@ -164,16 +164,16 @@ def analyze(experiment_path: str, main_exp_path: str | None = None, val_loader: 
             save_path = os.path.join(tab_dir, f'cm_string_{s+1}.png')
             plot_confusion_matrix(cm, target_names=labels, title=f'String {s+1} Confusion Matrix', save_path=save_path)
 
-    # --- B. Hand Position CM ---
+    # --- B. Fret-region CM ---
     if all_preds['hand_pos']:
-        logger.info("Generating Hand Position Confusion Matrix...")
+        logger.info("Generating Fret-Region Confusion Matrix...")
         p_hp = torch.cat(all_preds['hand_pos'], dim=0).numpy()
         t_hp = torch.cat(all_targets['hand_pos'], dim=0).numpy()
         
         hp_labels = ['Open', 'Low', 'Mid', 'High', 'V.High'] 
         cm = confusion_matrix(t_hp, p_hp, labels=np.arange(len(hp_labels)))
         save_path = os.path.join(analysis_dir, 'cm_hand_position.png')
-        plot_confusion_matrix(cm, target_names=hp_labels, title='Hand Position Confusion Matrix', save_path=save_path)
+        plot_confusion_matrix(cm, target_names=hp_labels, title='Fret-Region Confusion Matrix', save_path=save_path)
 
     # --- C. String Activity CM ---
     if all_preds['string_act']:

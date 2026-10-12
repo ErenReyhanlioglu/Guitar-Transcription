@@ -6,7 +6,7 @@ paths (`.venv\Scripts\...`); on Linux/macOS use `.venv/bin/...` instead.
 ## 1. Environment setup (training / evaluation)
 
 ```powershell
-# Create the main environment (Python 3.12) and install pinned dependencies
+# Create the main environment (Python 3.12 or 3.13) and install pinned dependencies
 uv sync
 
 # Activate it (optional — you can also just call .venv\Scripts\python.exe directly)
@@ -22,7 +22,7 @@ uv add <package-name>
 uv pip install <package-name>
 ```
 
-`torch`/`torchaudio`/`torchvision` are pulled from PyTorch's CUDA 12.6 index on
+`torch`/`torchaudio`/`torchvision` (2.11.0) are pulled from PyTorch's CUDA 12.8 index on
 Windows/Linux automatically (see `pyproject.toml`'s `[tool.uv.sources]`), so
 `uv sync` gives you a GPU-enabled install if you have an NVIDIA GPU + driver.
 Check it worked:
@@ -75,7 +75,7 @@ uv pip install --python .venv-extract\Scripts\python.exe "setuptools<81" --reins
 |---|---|
 | `--guitarset-root` | Raw GuitarSet dataset root (required). |
 | `--output-dir` | Base output dir; creates `ground_truth/`, `all_features/`, `enriched/` under it (required). |
-| `--stages` | Comma-separated stages to run: `1`=ground truth, `2`=spectral features (HCQT/CQT/Mel/STFT/Power), `3`=auxiliary labels (hand_position/string_activity/pitch_class). Default: all three. |
+| `--stages` | Comma-separated stages to run: `1`=ground truth, `2`=spectral features (HCQT/CQT/Mel/STFT/Power), `3`=auxiliary labels (fret region, stored as hand_position / string_activity / pitch_class). Default: all three. |
 | `--verify` | Run a structural integrity check on the final `enriched/` directory. |
 
 Point `train.py`'s `--data-root` at the resulting `enriched/` directory.
@@ -95,13 +95,30 @@ Point `train.py`'s `--data-root` at the resulting `enriched/` directory.
 
 | Flag | Meaning |
 |---|---|
-| `--config` | Path to a config YAML (required). `configs/cnn_mtl_config.yaml` is the paper's proposed HCQT+Mel Cascaded MT configuration. |
+| `--config` | Path to a config YAML (required). `configs/cnn_mtl_config.yaml` is the paper's proposed HCQT+Mel Cascaded MT configuration; `configs/ablations/` holds one config per other reported run. |
 | `--data-root` | Overrides the dataset's `data_root` from the config (required unless set in the config file). |
 | `--output-root` | Overrides `paths.output_root` from the config (required unless set in the config file). Creates `outputs/<model>_<timestamp>/fold_<n>/...`. |
 | `--folds` | Comma-separated 0-based fold indices to run, e.g. `0,1`. Default: all folds (six, per the paper's leave-one-player-out protocol). |
 | `--num-workers` | Overrides `data.num_workers`. **Set to `0` on Windows** — multiprocessing DataLoader workers can segfault there. Pure I/O parallelism, never changes results. |
 | `--batch-size` | Overrides `data.batch_size`. Each dataset item is a `framify_chunk_size`-frame chunk, so the paper's `batch_size=4` means ~2000 windowed samples per step (needs datacenter-class VRAM — the paper used an A100). Lower this for small local GPUs (e.g. `1`). **Unlike `--num-workers`, this can shift BatchNorm statistics slightly** — fine for local smoke-testing, don't use it for a run meant to reproduce the paper's numbers. |
 | `--skip-eval` | By default, every fold just trained is **automatically evaluated** afterwards (calls `evaluate.py`'s `run_evaluation()` directly — same leak-free threshold search, writes `k-fold_test_results.txt`). Pass this to skip that and only train. |
+
+Before the first fold, `train.py` runs the preflight checks in
+`src/utils/preflight.py`: every player must share the same repertoire, no
+feature file may be duplicated or malformed, every fold's train/validation/test
+files must be disjoint, and the composite loss must match the configured
+objective on a real batch. Any failure stops the run before training. The
+dataset audit is written to `dataset_split_manifest.json` in the experiment
+directory.
+
+Config switches used by the ablation configs:
+
+| Key | Meaning |
+|---|---|
+| `model.params.use_cascade_fusion` | `false` feeds the tablature head the bottleneck alone (auxiliary heads and losses stay). Default `true`. |
+| `model.params.tab_head_hidden_size` | Hidden width of the tablature head. Default `256`; the parameter-matched single-task run uses `771`. |
+| `loss.weighting_strategy` | `uncertainty` (learned) or `static` (tablature 1.0, auxiliaries `loss.<task>_loss.weight`). |
+| `training.reseed_each_fold` | `true` reseeds at the start of every fold, as the component campaign did. Default `false` (seed once, as in the Table 1 runs). |
 
 ### 3c. Evaluation (produces the paper's actual reported numbers)
 
@@ -127,12 +144,59 @@ without retraining:
 
 This is the leak-free evaluation path: threshold/duration grid search on the
 *validation* player only, applied to the held-out *test* player. Writes
-`k-fold_test_results.txt` into `--experiment-path`.
+`fold_<n>/test_results.json` (including auxiliary-head accuracy and the
+wrong-string breakdown) and `k-fold_test_results.txt` into `--experiment-path`.
+
+### 3d. Result tables and paired tests
+
+```powershell
+.venv\Scripts\python.exe summarize_results.py `
+    --run proposed=<path\to\outputs\run_A> `
+    --run campaign_control=<path\to\outputs\run_B> `
+    [--run LABEL=DIR ...] `
+    [--reference campaign_control] `
+    [--gcs-run campaign_control] `
+    --output-dir <path\to\results>
+```
+
+| Flag | Meaning |
+|---|---|
+| `--run` | An evaluated experiment directory and the label to report it under (repeatable). Name the component campaign's runs after their configs (`campaign_control`, `A_no_fusion`, ...) so `make_figures.py` finds them. |
+| `--reference` | Compare every other run against this one, fold by fold: mean difference, 95% t interval, Cohen's d_z, exact Wilcoxon p (repeatable). |
+| `--gcs-run` | Run whose GCS curves are plotted; defaults to the first `--reference`. |
+| `--output-dir` | Where the CSV files, `gcs_curves.pdf/.png` and `SUMMARY.md` are written. |
+
+### 3e. Figures
+
+```powershell
+.venv\Scripts\python.exe make_figures.py `
+    [--results-dir <path\to\results>] `
+    [--gcs-run <path\to\outputs\run>] `
+    [--overlay-run <path\to\outputs\run> --data-root <path\to\enriched\npz>] `
+    [--fold 1] [--track 00_SS3-98-C_solo] [--start 985] [--end 1035] [--threshold 0.45] `
+    [--out-dir figures]
+```
+
+`--results-dir` gives the string confusion and component figures,
+`--gcs-run` the GCS curves, `--overlay-run` the tablature and multi-pitch
+overlays (the threshold defaults to the one `evaluate.py` stored for that
+fold). Each figure is written as PDF and PNG; figures whose inputs are not
+given are skipped.
+
+### 3f. Inference cost
+
+```powershell
+.venv\Scripts\python.exe benchmark_cost.py [--output cost.json] [--no-timing]
+```
+
+Parameters, MACs per frame and real-time factor (GPU if available, and CPU)
+for TabCNN, the single-task, the parameter-matched and the proposed model.
+`--no-timing` only counts parameters and MACs, which takes a few seconds.
 
 ## 4. Type checking
 
 ```powershell
-uvx pyright --pythonpath .venv/Scripts/python.exe train.py evaluate.py extract_features.py src
+uvx pyright --pythonpath .venv/Scripts/python.exe train.py evaluate.py extract_features.py summarize_results.py make_figures.py benchmark_cost.py src
 ```
 
 ## 5. Git basics for this repo
