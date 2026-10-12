@@ -286,7 +286,7 @@ Full flag-by-flag documentation for every script is in [`terminal_cheatsheet.md`
 
 ## Pretrained weights
 
-Trained checkpoints for the proposed HCQT+Mel cascaded configuration (all six folds, the run reported in Table 1) are hosted separately in [Guitar-Transcription-Weights](https://github.com/ErenReyhanlioglu/Guitar-Transcription-Weights) to keep this repository lightweight. They load into `src/models/cnn_mtl.py` with `configs/cnn_mtl_config.yaml`; fold i was tested on player i and validated on player i+1.
+Trained checkpoints for the proposed HCQT+Mel cascaded configuration (all six folds, the run reported in Table 1) are hosted separately in [Guitar-Transcription-Weights](https://github.com/ErenReyhanlioglu/Guitar-Transcription-Weights) to keep this repository lightweight. They load into `src/models/cnn_mtl.py` with `configs/cnn_mtl_config.yaml`; fold i was tested on player i and validated on player i+1. Weights for every ablation run in Tables 1 and 5 are attached to that repository's [`ablation-runs` release](https://github.com/ErenReyhanlioglu/Guitar-Transcription-Weights/releases/tag/ablation-runs), one zip per config in `configs/ablations/`.
 
 ## Reproducing the results
 
